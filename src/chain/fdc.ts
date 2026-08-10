@@ -67,10 +67,17 @@ export interface FdcProof {
   requestBytes?: string;
 }
 
+const API_KEY_HEADER = "X-API-KEY";
+
+interface FspStatus {
+  active: { voting_round_id: number; start_timestamp: number };
+  latest_fdc: { voting_round_id: number; start_timestamp: number };
+}
+
 const DEFAULT_COSTON2: FdcConfig = {
   verifierUrl: "https://coston2-verifier.api.flare.network/",
   verifierApiKey: "",
-  daLayerUrl: "https://coston2-da-layer.flare.network/",
+  daLayerUrl: "https://ctn2-data-availability.flare.network/",
 };
 
 export class FdcClient {
@@ -123,7 +130,7 @@ export class FdcClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(this.cfg.verifierApiKey ? { "X-API-KEY": this.cfg.verifierApiKey } : {}),
+        ...(this.cfg.verifierApiKey ? { [API_KEY_HEADER]: this.cfg.verifierApiKey } : {}),
       },
       body: JSON.stringify({ votingRoundId: roundId, requestBytes }),
     });
@@ -131,6 +138,51 @@ export class FdcClient {
       throw new Error(`getProof failed (${resp.status}): ${await resp.text()}`);
     }
     const json = (await resp.json()) as { proof: string[]; response: XrpPaymentResponse };
+    return { proof: json.proof, data: json.response, roundId, requestBytes };
+  }
+
+  /** Latest finalized FDC voting round id (from /api/v0/fsp/status → latest_fdc). */
+  async getLatestFdcRound(): Promise<number> {
+    const url = `${this.cfg.daLayerUrl}api/v0/fsp/status`;
+    const resp = await fetch(url, {
+      headers: this.cfg.verifierApiKey ? { [API_KEY_HEADER]: this.cfg.verifierApiKey } : {},
+    });
+    if (!resp.ok) {
+      throw new Error(`fsp/status failed (${resp.status}): ${await resp.text()}`);
+    }
+    const json = (await resp.json()) as FspStatus;
+    return json.latest_fdc.voting_round_id;
+  }
+
+  /**
+   * Fetch the latest finalized proof for `requestBytes` without knowing the round id
+   * (POST /api/v0/fdc/get-proof-round-bytes). Returns the proof + its round id.
+   * Throws if the request is not yet finalized (HTTP 400).
+   */
+  async getLatestProof(requestBytes: string): Promise<FdcProof> {
+    const url = `${this.cfg.daLayerUrl}api/v0/fdc/get-proof-round-bytes`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(this.cfg.verifierApiKey ? { [API_KEY_HEADER]: this.cfg.verifierApiKey } : {}),
+      },
+      body: JSON.stringify({ requestBytes }),
+    });
+    if (!resp.ok) {
+      throw new Error(`getLatestProof failed (${resp.status}): ${await resp.text()}`);
+    }
+    const json = (await resp.json()) as { proof: string[]; response: XrpPaymentResponse };
+    // The DA layer returns 200 with an empty proof for not-yet-finalized / unknown
+    // requests. Treat an empty proof as "not finalized" so callers can retry.
+    if (!Array.isArray(json.proof) || json.proof.length === 0) {
+      throw new Error(
+        `getLatestProof: proof not yet finalized for this request (empty Merkle proof)`,
+      );
+    }
+    // The round-less endpoint doesn't echo the round id; resolve it from fsp/status
+    // so the on-chain verifier gets a valid (roundId, proof) pair.
+    const roundId = await this.getLatestFdcRound();
     return { proof: json.proof, data: json.response, roundId, requestBytes };
   }
 }

@@ -82,14 +82,10 @@ export class Executor {
       this.cfg.proofOwner,
       useTestnet,
     );
-    // The FDC round is finalized ~90-180s after the XRPL tx. We need to know the
-    // round id. The DA Layer exposes the latest finalized round; we poll until
-    // our request bytes appear in a finalized round.
-    // For MVP, the caller provides the round id (or we probe from latest).
-    throwUnlessFinalizedHint(prepared.abiEncodedRequest);
-    // Round discovery: probe decreasing from latest until proof is available.
-    const roundId = await this.findRoundForProof(prepared.abiEncodedRequest);
-    return this.cfg.fdc.getProof(roundId, prepared.abiEncodedRequest);
+    // The FDC round is finalized ~90-180s after the XRPL tx. Use the round-less
+    // latest-proof endpoint (POST /fdc/get-proof-round-bytes); it returns the
+    // proof + the current finalized round id. Throws if not yet finalized.
+    return this.cfg.fdc.getLatestProof(prepared.abiEncodedRequest);
   }
 
   /** Call executeDirectMinting with a finalized proof. */
@@ -221,18 +217,6 @@ export class Executor {
     return this.executeDirectMintingWithData(proof, data, msgValueWei);
   }
 
-  /** Best-effort: find the FDC round that contains our request. Polls the DA layer. */
-  private async findRoundForProof(_requestBytes: string): Promise<number> {
-    // The DA layer exposes the current finalized round id. For MVP we probe
-    // the latest few rounds. A production executor indexes the round→requests
-    // map off-chain. This stub returns a sentinel; the real polling happens
-    // in the orchestrator (which can retry settle() over time).
-    throw new Error(
-      "Round discovery not implemented — call settleAtRound() with a known round id, " +
-        "or poll the DA layer's latest round until the request is finalized",
-    );
-  }
-
   /** Settle once the caller knows the FDC round id (e.g. from polling). */
   async settleAtRound(xrplTxHash: string, roundId: number, useTestnet = true): Promise<ExecuteResult> {
     let proof: FdcProof;
@@ -248,9 +232,4 @@ export class Executor {
     }
     return this.executeDirectMinting(proof);
   }
-}
-
-function throwUnlessFinalizedHint(_requestBytes: string): void {
-  // Placeholder for a pre-check; the actual finalization is verified when
-  // getProof succeeds. Kept for clarity.
 }

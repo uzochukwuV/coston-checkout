@@ -30,7 +30,7 @@ const rpcUrl = process.env.FLARE_RPC_URL ?? "https://coston2-api.flare.network/e
 const xrplWsUrl = process.env.XRPL_WS_URL ?? "wss://s.altnet.rippletest.net:51233";
 const merchantFlare = (process.env.MERCHANT_FLARE ?? "0x000000000000000000000000000000000000dEaD") as `0x${string}`;
 const personalAccount = (process.env.PERSONAL_ACCOUNT ?? "0x000000000000000000000000000000000000BEEF") as `0x${string}`;
-const fxrpToken = (process.env.FXRP_TOKEN ?? "0x000000000000000000000000000000000000F00D") as `0x${string}`;
+// FXRP token is resolved live from the registry below; FXRP_TOKEN env overrides.
 
 function bigintReplacer(_k: string, v: unknown): unknown {
   return typeof v === "bigint" ? v.toString() + "n" : v;
@@ -41,9 +41,11 @@ async function main() {
 
   // resolve live params
   const addresses = await resolveAddresses(rpcUrl);
+  const fxrpToken = (process.env.FXRP_TOKEN ?? addresses.fxrpToken) as `0x${string}`;
   const assetManager = AssetManagerClient.fromRpc(addresses.assetManagerFXRP, rpcUrl);
   const fees = await assetManager.getFeeParams();
   console.log("Mint fees:  bips=" + fees.mintFeeBIPS + " min=" + fees.mintMinimumFeeUBA + " exec=" + fees.executorFeeUBA);
+  console.log("FXRP token (resolved):", fxrpToken);
 
   const ftso = await FtsoClient.create(rpcUrl);
   const xrpUsd = await ftso.getFeed(XRP_USD_FEED_ID);
