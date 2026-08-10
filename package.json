@@ -1,0 +1,27 @@
+{
+  "name": "fxrp-checkout",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gasless FXRP merchant checkout on Flare (FAssets + FDC + FTSO + Smart Accounts)",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc",
+    "check:params": "tsx src/scripts/check-params.ts",
+    "check:ftso": "tsx src/scripts/check-ftso.ts",
+    "check:xrpl": "tsx src/scripts/check-xrpl-vault.ts",
+    "checkout": "tsx src/scripts/run-checkout.ts",
+    "checkout:b": "tsx src/scripts/run-checkout-b.ts"
+  },
+  "dependencies": {
+    "ethers": "^6.13.4",
+    "viem": "^2.21.0",
+    "xrpl": "^4.2.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
