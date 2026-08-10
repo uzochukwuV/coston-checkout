@@ -61,3 +61,62 @@ export function matchPaymentToOrder(
 export function isOverpayment(payment: VaultPayment, order: Order): boolean {
   return BigInt(payment.amountDrops || "0") > order.quote.xrpAmountDrops;
 }
+
+/**
+ * Flow C matcher — bind a vault payment to a Flow C (AUTO) order by the 0xFE memo
+ * user-op hash. The customer's XRPL Payment carries a 42-byte `0xFE` memo whose
+ * last 32 bytes are `keccak256(PackedUserOperation)`; the order stores the same
+ * hash (from createOrder). No destination tag is used (tags would credit the
+ * tag-holder, not the smart account).
+ *
+ * Pure. Security: the memo hash is a commitment only — settlement still requires
+ * the on-chain `executeDirectMintingWithData` hash check (the trust root). The raw
+ * memo is decoded strictly per the 0xFE binary format; never treated as text.
+ */
+export function matchPaymentToFlowCOrder(
+  payment: VaultPayment,
+  orders: Order[],
+  nowSec = Math.floor(Date.now() / 1000),
+): MatchResult {
+  if (!payment.memoData) {
+    return { matched: false, reason: "Flow C payment has no memo" };
+  }
+  // extract the 32-byte userOpHash from the 42-byte 0xFE memo (bytes 10-41)
+  let userOpHash: `0x${string}`;
+  try {
+    userOpHash = decodeFeMemoUserOpHash(payment.memoData);
+  } catch (e) {
+    return { matched: false, reason: `memo is not a valid 0xFE instruction: ${(e as Error).message}` };
+  }
+  const order = orders.find(
+    (o) => o.status === "AWAITING_PAYMENT" && o.settlement === "AUTO" && o.userOpHash === userOpHash,
+  );
+  if (!order) {
+    return { matched: false, reason: `no open Flow C order for userOpHash ${userOpHash}` };
+  }
+  if (!isQuoteLive(order.quote, nowSec)) {
+    return { matched: false, reason: `order ${order.id} expired`, order };
+  }
+  const paidDrops = BigInt(payment.amountDrops || "0");
+  if (paidDrops < order.quote.minAcceptedDrops) {
+    return {
+      matched: false,
+      reason: `underpaid: ${paidDrops} < min ${order.quote.minAcceptedDrops} drops`,
+      order,
+    };
+  }
+  // record the customer's XRPL address (the smart-account owner) from the payment source
+  return { matched: true, order: { ...order, customerXrplAddress: payment.sourceAddress } };
+}
+
+/** Decode the 32-byte userOpHash from a 42-byte 0xFE memo (hex, no 0x prefix). */
+function decodeFeMemoUserOpHash(memoHex: string): `0x${string}` {
+  const h = memoHex.startsWith("0x") ? memoHex.slice(2).toLowerCase() : memoHex.toLowerCase();
+  if (h.length !== 84) {
+    throw new Error(`0xFE memo must be 42 bytes (84 hex chars), got ${h.length / 2} bytes`);
+  }
+  if (h.slice(0, 2) !== "fe") {
+    throw new Error(`expected 0xFE memo opcode, got 0x${h.slice(0, 2)}`);
+  }
+  return ("0x" + h.slice(20, 84)) as `0x${string}`;
+}

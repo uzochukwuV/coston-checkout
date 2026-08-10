@@ -115,6 +115,35 @@ describe("priceOrder — Flow B (settle-to-XRP)", () => {
   });
 });
 
+describe("priceOrder — Flow C (AUTO: atomic mint + action)", () => {
+  it("prices like Flow A — merchant gets the full minted FXRP; no redeem fee", () => {
+    const { breakdown, merchantProtected } = priceOrder({
+      customerXrpDrops: 10_000_000n,
+      fees: mockFees(),
+      operatorFeeBps: 50n,
+      settlement: "AUTO",
+    });
+    expect(breakdown.mintFeeDrops).toBe(200_000n);
+    expect(breakdown.fxrpMintedDrops).toBe(9_800_000n);
+    expect(breakdown.merchantFxrpDrops).toBe(9_800_000n);
+    expect(breakdown.redeemFeeDrops).toBe(0n);
+    expect(breakdown.merchantXrpDrops).toBe(0n);
+    expect(merchantProtected).toBe(true);
+  });
+
+  it("AUTO equals FXRP pricing for the same input", () => {
+    const input = {
+      customerXrpDrops: 50_000_000n,
+      fees: mockFees(),
+      operatorFeeBps: 75n,
+    };
+    const a = priceOrder({ ...input, settlement: "FXRP" as const });
+    const c = priceOrder({ ...input, settlement: "AUTO" as const });
+    expect(c.breakdown).toEqual(a.breakdown);
+    expect(c.merchantProtected).toBe(a.merchantProtected);
+  });
+});
+
 describe("isRedeemable", () => {
   it("true when amount >= minimum", () => {
     expect(isRedeemable(1_000_000n, 1_000_000n)).toBe(true);

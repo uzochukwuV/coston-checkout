@@ -20,6 +20,10 @@ export interface WebhookPayload {
   merchantXrpDrops?: string; // XRP paid to merchant (Flow B)
   redemptionRequestId?: string; // FAssets redemption request id
   redemptionPaymentTxHash?: string; // XRPL tx of the agent payout
+  // Flow C (atomic mint + user op)
+  userOpHash?: string; // keccak256 of the PackedUserOperation (0xFE memo)
+  actionKind?: string; // transfer | deposit | swap | raw
+  personalAccountAddress?: string; // customer's smart account on Flare
   feeBreakdown?: {
     customerXrpDrops: string;
     mintFeeDrops: string;

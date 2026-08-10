@@ -18,15 +18,57 @@ import {
   type QuoteParams,
   type SettlementMode,
   type FeeBreakdown,
+  type OrderAction,
 } from "./order.js";
 import { OrderStore } from "./order-store.js";
 import { TagPool } from "./tag-pool.js";
-import { matchPaymentToOrder } from "./matcher.js";
+import { matchPaymentToOrder, matchPaymentToFlowCOrder } from "./matcher.js";
 import { signWebhook, deliverWebhook, type SignedWebhook } from "./webhook.js";
 import type { Executor } from "./executor.js";
 import type { Redeemer } from "./redeemer.js";
 import { priceOrder } from "./pricing.js";
 import { decideRefundPolicy, computeRefundAmount } from "./refund.js";
+import { buildUserOp, abiEncodeUserOp, totalCallValue, type Call } from "./userop.js";
+import {
+  buildTransferCall,
+  buildVaultDepositCall,
+  buildRawCall,
+} from "./actions.js";
+
+/** Build the Call[] batch for a Flow C OrderAction spec. Pure. */
+function buildCallsForAction(action: OrderAction, amountDrops: bigint): Call[] {
+  switch (action.kind) {
+    case "transfer": {
+      if (!action.fxrpTokenAddress) throw new Error("transfer action requires fxrpTokenAddress");
+      if (!action.recipient) throw new Error("transfer action requires recipient");
+      return [buildTransferCall(action.fxrpTokenAddress, action.recipient, amountDrops)];
+    }
+    case "deposit": {
+      if (!action.targetAddress) throw new Error("deposit action requires targetAddress (vault)");
+      return [
+        buildVaultDepositCall(
+          action.targetAddress,
+          amountDrops,
+          action.depositSelector ?? "deposit",
+        ),
+      ];
+    }
+    case "swap": {
+      // swap = a generic single call to a DEX; caller supplies the pre-encoded
+      // calldata in rawCallData (e.g. exactInputSingle).
+      if (!action.targetAddress) throw new Error("swap action requires targetAddress (DEX)");
+      if (!action.rawCallData) throw new Error("swap action requires rawCallData (encoded swap)");
+      return [buildRawCall(action.targetAddress, action.rawCallData, action.rawValueWei ?? 0n)];
+    }
+    case "raw": {
+      if (!action.targetAddress) throw new Error("raw action requires targetAddress");
+      if (!action.rawCallData) throw new Error("raw action requires rawCallData");
+      return [buildRawCall(action.targetAddress, action.rawCallData, action.rawValueWei ?? 0n)];
+    }
+    default:
+      throw new Error(`unknown action kind: ${(action as OrderAction).kind}`);
+  }
+}
 
 export interface CheckoutConfig {
   merchantId: string;
@@ -45,6 +87,16 @@ export interface CheckoutConfig {
 export interface CreateOrderInput {
   usdAmount: number;
   settlement?: SettlementMode; // default "FXRP"
+  /** For Flow C: the atomic post-mint action spec. */
+  action?: OrderAction;
+  /** For Flow C: the customer's XRPL address (their smart account owner). */
+  customerXrplAddress?: string;
+  /** For Flow C: resolved personal-account address (smart account). */
+  personalAccountAddress?: `0x${string}`;
+  /** For Flow C: the current memo nonce for the personal account. */
+  userOpNonce?: bigint;
+  /** For Flow C: the 0xFE memo user-op hash the customer committed to. */
+  userOpHash?: `0x${string}`;
 }
 
 export class CheckoutService {
@@ -77,6 +129,11 @@ export class CheckoutService {
     if (settlement === "XRP" && !this.redeemer) {
       throw new Error("Flow B (XRP settlement) requires a Redeemer");
     }
+    if (settlement === "AUTO") {
+      if (!input.action) throw new Error("Flow C (AUTO settlement) requires an action spec");
+      if (!input.personalAccountAddress) throw new Error("Flow C requires personalAccountAddress");
+      if (input.userOpNonce === undefined) throw new Error("Flow C requires userOpNonce");
+    }
 
     const xrpUsd = await this.ftso.getFeed(XRP_USD_FEED_ID);
     const quote = computeQuote({
@@ -97,6 +154,11 @@ export class CheckoutService {
       createdAt: Math.floor(Date.now() / 1000),
       merchantXrplAddress: settlement === "XRP" ? this.cfg.merchantXrplAddress : undefined,
       merchantXrplDestinationTag: settlement === "XRP" ? this.cfg.merchantXrplDestinationTag : undefined,
+      action: settlement === "AUTO" ? input.action : undefined,
+      customerXrplAddress: settlement === "AUTO" ? input.customerXrplAddress : undefined,
+      personalAccountAddress: settlement === "AUTO" ? input.personalAccountAddress : undefined,
+      userOpNonce: settlement === "AUTO" ? input.userOpNonce : undefined,
+      userOpHash: settlement === "AUTO" ? input.userOpHash : undefined,
     };
 
     // price the fee stack (uses live fee params)
@@ -109,8 +171,9 @@ export class CheckoutService {
     });
     order = { ...order, feeBreakdown: breakdown };
 
-    // allocate a tag (order binding)
-    if (this.tagPool.totalCount() > 0) {
+    // allocate a tag (order binding) — Flow A/B use MintingTagManager tags;
+    // Flow C binds by the 0xFE memo hash instead, so no tag is allocated.
+    if (settlement !== "AUTO" && this.tagPool.totalCount() > 0) {
       const tagId = this.tagPool.allocate(id, this.cfg.merchantFlareAddress);
       order = { ...order, tagId };
     }
@@ -138,14 +201,8 @@ export class CheckoutService {
     const open = this.store.listOpen("AWAITING_PAYMENT");
     const settled: Order[] = [];
     for (const payment of payments) {
-      const result = matchPaymentToOrder(payment, open);
-      if (!result.matched || !result.order) continue;
-      let order = transition(result.order, "PAYMENT_DETECTED", {
-        matchedTxHash: payment.txHash,
-      });
-      this.store.save(order);
-      order = await this.settleOrder(order);
-      if (order.status === "SETTLED" || order.status === "REDEEMED") {
+      const order = await this.matchAndSettle(payment, open);
+      if (order && (order.status === "SETTLED" || order.status === "REDEEMED")) {
         settled.push(order);
       }
     }
@@ -155,24 +212,43 @@ export class CheckoutService {
   /** Process a single matched payment (for tests / explicit dispatch). */
   async processPayment(payment: VaultPayment): Promise<Order | undefined> {
     const open = this.store.listOpen("AWAITING_PAYMENT");
-    const result = matchPaymentToOrder(payment, open);
+    return this.matchAndSettle(payment, open);
+  }
+
+  /** Match a payment (Flow A/B by tag, Flow C by 0xFE memo hash) then settle. */
+  private async matchAndSettle(payment: VaultPayment, open: Order[]): Promise<Order | undefined> {
+    // Flow C: match by 0xFE memo user-op hash (no destination tag)
+    let result = matchPaymentToFlowCOrder(payment, open);
+    // Flow A/B: match by destination tag
+    if (!result.matched) {
+      result = matchPaymentToOrder(payment, open);
+    }
     if (!result.matched || !result.order) return undefined;
     let order = transition(result.order, "PAYMENT_DETECTED", {
       matchedTxHash: payment.txHash,
+      customerXrplAddress: result.order.customerXrplAddress ?? payment.sourceAddress,
     });
     this.store.save(order);
     return this.settleOrder(order);
   }
 
   /**
-   * Settle a detected order: mint FXRP, then (Flow B) redeem to XRP.
+   * Settle a detected order. Dispatches by settlement mode:
+   *   FXRP → mint to merchant EOA (executeDirectMinting)
+   *   XRP  → mint to operator, then redeemWithTag (Flow B)
+   *   AUTO → atomic mint + user op (executeDirectMintingWithData, Flow C)
    * Shared by pollAndMatch + processPayment.
    */
   private async settleOrder(order: Order): Promise<Order> {
     let current = transition(order, "SETTLING");
     this.store.save(current);
 
-    // 1. mint FXRP via the executor (FDC proof → executeDirectMinting)
+    // Flow C: atomic mint + user op via executeDirectMintingWithData
+    if (current.settlement === "AUTO") {
+      return this.settleFlowC(current);
+    }
+
+    // Flow A / B: mint FXRP via the executor (FDC proof → executeDirectMinting)
     const execResult = await this.executor.settle(current.matchedTxHash!, true);
     if (!execResult.ok || !execResult.flareTxHash) {
       if (!execResult.dryRun) {
@@ -198,6 +274,64 @@ export class CheckoutService {
     current = transition(current, "MINTED", { settleTxHash: execResult.flareTxHash });
     this.store.save(current);
     return this.redeemOrder(current);
+  }
+
+  /**
+   * Flow C: build the PackedUserOperation from the order's action, ABI-encode it,
+   * and call executeDirectMintingWithData. Atomic — a revert rolls back the mint
+   * (no FXRP minted; XRP stays at the Core Vault, recoverable via 0xE0 skip-memo).
+   */
+  private async settleFlowC(order: Order): Promise<Order> {
+    if (!order.action || !order.personalAccountAddress || order.userOpNonce === undefined) {
+      const failed = transition(order, "FAILED", { error: "Flow C order missing action/personalAccount/nonce" });
+      this.store.save(failed);
+      return failed;
+    }
+    const amountDrops = order.action.amountDrops ?? order.feeBreakdown?.fxrpMintedDrops ?? 0n;
+    if (amountDrops <= 0n) {
+      const failed = transition(order, "FAILED", { error: "Flow C: nothing to mint+route (amount 0)" });
+      this.store.save(failed);
+      return failed;
+    }
+    // build the Call[] for the action
+    let calls: import("./actions.js").Call[];
+    try {
+      calls = buildCallsForAction(order.action, amountDrops);
+    } catch (e) {
+      const failed = transition(order, "FAILED", { error: `action build failed: ${(e as Error).message}` });
+      this.store.save(failed);
+      return failed;
+    }
+    const userOp = buildUserOp(order.personalAccountAddress, order.userOpNonce, calls);
+    const userOpData = abiEncodeUserOp(userOp);
+    const msgValue = totalCallValue(calls);
+
+    const result = await this.executor.settleWithData(
+      order.matchedTxHash!,
+      userOpData,
+      msgValue,
+      true,
+    );
+    if (!result.ok || !result.flareTxHash) {
+      if (!result.dryRun) {
+        // Atomic revert → no FXRP minted. XRP remains at the Core Vault.
+        const failed = transition(order, "FAILED", {
+          error: `Flow C revert (no mint): ${result.error ?? "unknown"}. Recover via 0xE0 skip-memo.`,
+        });
+        this.store.save(failed);
+        await this.fireWebhook(failed, "");
+        return failed;
+      }
+      return this.store.get(order.id)!;
+    }
+    // atomic success — mint + user op in one tx
+    const current = transition(order, "SETTLED", {
+      settleTxHash: result.flareTxHash,
+      userOpHash: order.userOpHash, // the pre-committed 0xFE memo hash
+    });
+    this.store.save(current);
+    await this.fireWebhook(current, result.flareTxHash);
+    return current;
   }
 
   /** Flow B: redeem minted FXRP to the merchant's XRPL address. */
@@ -319,10 +453,14 @@ export class CheckoutService {
       orderId: order.id,
       flareTxHash,
       fdcAttestationId: order.matchedTxHash ?? "",
-      fxrpSettled: order.settlement === "FXRP" ? (fb?.merchantFxrpDrops.toString() ?? "0") : "0",
+      fxrpSettled: (order.settlement === "FXRP" || order.settlement === "AUTO") ? (fb?.merchantFxrpDrops.toString() ?? "0") : "0",
       status: order.status,
       settlementMode: order.settlement,
       merchantXrpDrops: order.settlement === "XRP" ? (fb?.merchantXrpDrops.toString() ?? "0") : undefined,
+      // Flow C fields
+      userOpHash: order.userOpHash,
+      actionKind: order.action?.kind,
+      personalAccountAddress: order.personalAccountAddress,
       redemptionRequestId: order.redemptionRequestId?.toString(),
       redemptionPaymentTxHash: order.redemptionPaymentTxHash,
       feeBreakdown: fb

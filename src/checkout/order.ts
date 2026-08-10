@@ -11,6 +11,11 @@
  *   ... → SETTLING → MINTED → REDEEMING → REDEEMED
  *   REDEEMING → REDEEM_DEFAULTED → (REDEEMING retry | REFUNDED | FAILED)
  *
+ * Flow C (atomic mint + user op via executeDirectMintingWithData):
+ *   ... → SETTLING → SETTLED  (atomic: mint + user op succeed together)
+ *   ... → SETTLING → FAILED   (any revert rolls back the mint; XRP stays at
+ *                              the Core Vault, recoverable via the 0xE0 skip-memo)
+ *
  * Pricing: quote USD → XRP amount (drops) via FTSO feed, with a slippage buffer
  * and a checkout service fee (BIPS). Both are added on top of the USD-equivalent
  * XRP so the merchant is not shorted by volatility or fees.
@@ -32,7 +37,32 @@ export type OrderStatus =
   | "EXPIRED"
   | "FAILED";
 
-export type SettlementMode = "FXRP" | "XRP";
+export type SettlementMode = "FXRP" | "XRP" | "AUTO";
+
+/**
+ * Flow C action spec — describes the atomic post-mint user operation.
+ * The operator encodes this into a PackedUserOperation; the customer commits to
+ * its hash in the 0xFE memo. Atomicity: if the user op reverts, no FXRP is minted.
+ */
+export type ActionKind = "transfer" | "deposit" | "swap" | "raw";
+
+export interface OrderAction {
+  kind: ActionKind;
+  /** For "transfer"/"swap": the FXRP token address (passed to the builder). */
+  fxrpTokenAddress?: `0x${string}`;
+  /** For "transfer": recipient EOA (merchant's Flare address). */
+  recipient?: `0x${string}`;
+  /** For "deposit"/"swap": the target contract (vault / DEX). */
+  targetAddress?: `0x${string}`;
+  /** For "deposit": the vault function selector (default "deposit"). */
+  depositSelector?: string;
+  /** For "raw": pre-encoded calldata for a single contract call. */
+  rawCallData?: `0x${string}`;
+  /** For "raw": FLR value (wei) to attach to the call. */
+  rawValueWei?: bigint;
+  /** Amount of FXRP the action operates on (drops/UBA). Defaults to the full mint. */
+  amountDrops?: bigint;
+}
 
 /**
  * Fee breakdown for an order (all in XRP drops = UBA for FXRP).
@@ -91,6 +121,16 @@ export interface Order {
   refundTxHash?: string;
   /** Computed fee breakdown (set when the order is priced). */
   feeBreakdown?: FeeBreakdown;
+  /** For Flow C: the atomic post-mint action spec. */
+  action?: OrderAction;
+  /** For Flow C: the customer's XRPL address (maps to their smart account). */
+  customerXrplAddress?: string;
+  /** For Flow C: the personal account address (smart account) for this XRPL addr. */
+  personalAccountAddress?: `0x${string}`;
+  /** For Flow C: the 0xFE memo user-op hash the customer committed to. */
+  userOpHash?: `0x${string}`;
+  /** For Flow C: the current memo nonce used to build the user op. */
+  userOpNonce?: bigint;
   /** Error message on FAILED. */
   error?: string;
   createdAt: number;

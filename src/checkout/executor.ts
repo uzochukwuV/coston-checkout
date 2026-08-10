@@ -22,6 +22,7 @@ import { FdcClient, type FdcProof } from "../chain/fdc.js";
 
 const ASSET_MANAGER_ABI = [
   "function executeDirectMinting((bytes32[] merkleProof, bytes data) _proof) payable",
+  "function executeDirectMintingWithData((bytes32[] merkleProof, bytes data) _proof, bytes _data) payable",
   // Query helpers for idempotency checks (may not all exist on every network).
   "function directMintingDelayState(bytes32 transactionId) view returns (uint256 allowedAt, bool finalized)",
 ];
@@ -32,6 +33,16 @@ export interface ExecuteResult {
   fdcRoundId?: number;
   error?: string;
   dryRun: boolean;
+}
+
+export interface ExecuteWithDataResult {
+  ok: boolean;
+  flareTxHash?: string;
+  fdcRoundId?: number;
+  error?: string;
+  dryRun: boolean;
+  /** Total FLR msg.value attached (sum of call.value in the user op). */
+  msgValueWei?: string;
 }
 
 export interface ExecutorConfig {
@@ -120,6 +131,94 @@ export class Executor {
       return { ok: false, dryRun: this.cfg.dryRun, error: `proof fetch failed: ${(e as Error).message}` };
     }
     return this.executeDirectMinting(proof);
+  }
+
+  /**
+   * Flow C: call executeDirectMintingWithData(proof, data) with the ABI-encoded
+   * PackedUserOperation. The contract verifies keccak256(data) == the 0xFE memo
+   * hash, mints FXRP to the personal account, and dispatches the user op atomically.
+   *
+   * Security: `_data` is operator-built (not from the UNTRUSTED XRPL memo); the
+   * on-chain hash check is the trust root. We attach `msg.value = sum(call.value)`
+   * (usually 0 for ERC-20 ops) so inner calls can send FLR.
+   */
+  async executeDirectMintingWithData(
+    proof: FdcProof,
+    data: `0x${string}`,
+    msgValueWei = 0n,
+  ): Promise<ExecuteWithDataResult> {
+    if (this.cfg.dryRun) {
+      return {
+        ok: false,
+        dryRun: true,
+        fdcRoundId: proof.roundId,
+        msgValueWei: msgValueWei.toString(),
+        error: "DRY_RUN — would call executeDirectMintingWithData(proof, userOpData)",
+      };
+    }
+    if (!this.wallet) {
+      return { ok: false, dryRun: true, error: "no PRIVATE_KEY — cannot broadcast", msgValueWei: msgValueWei.toString() };
+    }
+    try {
+      const tx = await this.am.executeDirectMintingWithData(
+        { merkleProof: proof.proof, data: proof.data },
+        data,
+        { value: msgValueWei },
+      );
+      const receipt = await tx.wait();
+      return {
+        ok: true,
+        dryRun: false,
+        flareTxHash: receipt.hash,
+        fdcRoundId: proof.roundId,
+        msgValueWei: msgValueWei.toString(),
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        dryRun: false,
+        error: (e as Error).message,
+        msgValueWei: msgValueWei.toString(),
+      };
+    }
+  }
+
+  /** End-to-end Flow C: fetch proof then executeDirectMintingWithData. */
+  async settleWithData(
+    xrplTxHash: string,
+    data: `0x${string}`,
+    msgValueWei = 0n,
+    useTestnet = true,
+  ): Promise<ExecuteWithDataResult> {
+    let proof: FdcProof;
+    try {
+      proof = await this.fetchProof(xrplTxHash, useTestnet);
+    } catch (e) {
+      return { ok: false, dryRun: this.cfg.dryRun, error: `proof fetch failed: ${(e as Error).message}`, msgValueWei: msgValueWei.toString() };
+    }
+    return this.executeDirectMintingWithData(proof, data, msgValueWei);
+  }
+
+  /** Flow C with a known FDC round id. */
+  async settleWithDataAtRound(
+    xrplTxHash: string,
+    roundId: number,
+    data: `0x${string}`,
+    msgValueWei = 0n,
+    useTestnet = true,
+  ): Promise<ExecuteWithDataResult> {
+    let proof: FdcProof;
+    try {
+      const prepared = await this.cfg.fdc.prepareXrpPaymentProof(
+        xrplTxHash,
+        this.cfg.proofOwner,
+        useTestnet,
+      );
+      proof = await this.cfg.fdc.getProof(roundId, prepared.abiEncodedRequest);
+    } catch (e) {
+      return { ok: false, dryRun: this.cfg.dryRun, error: `proof fetch failed: ${(e as Error).message}`, msgValueWei: msgValueWei.toString() };
+    }
+    return this.executeDirectMintingWithData(proof, data, msgValueWei);
   }
 
   /** Best-effort: find the FDC round that contains our request. Polls the DA layer. */

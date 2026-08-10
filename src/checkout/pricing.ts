@@ -39,7 +39,7 @@ export interface PriceFlowInput {
   /** Checkout operator service fee in BIPS (e.g. 50 = 0.5%). */
   operatorFeeBps: bigint;
   /** Settlement mode determines which fees apply. */
-  settlement: "FXRP" | "XRP";
+  settlement: "FXRP" | "XRP" | "AUTO";
 }
 
 export interface PriceFlowResult {
@@ -71,11 +71,11 @@ export function priceOrder(input: PriceFlowInput): PriceFlowResult {
   const totalMintFee = mintingFee + executorFee;
   const fxrpMinted = customerXrpDrops > totalMintFee ? customerXrpDrops - totalMintFee : 0n;
 
-  if (settlement === "FXRP") {
-    // Flow A: merchant receives FXRP. Operator fee is taken from the service
-    // buffer already paid by the customer (not deducted from merchant FXRP),
-    // so the merchant keeps the full minted FXRP. We record the operator's
-    // notional revenue as the service-fee portion of the customer's payment.
+  if (settlement === "FXRP" || settlement === "AUTO") {
+    // Flow A / Flow C: merchant receives FXRP (Flow A to their EOA; Flow C routed
+    // atomically via the user op, but the FXRP value is the same). No redeem fee.
+    // Operator fee is taken from the service buffer already paid by the customer
+    // (not deducted from merchant FXRP), so the merchant keeps the full minted FXRP.
     const operatorFeeDrops = bipsOf(customerXrpDrops, operatorFeeBps);
     const breakdown: FeeBreakdown = {
       customerXrpDrops,
