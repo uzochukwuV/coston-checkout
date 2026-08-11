@@ -1,11 +1,24 @@
 /**
- * In-memory order store. For v1/MVP this is a Map; Phase 4 swaps for a real DB.
+ * Order persistence interface — implemented by the in-memory OrderStore and the
+ * SQLite-backed SqliteOrderStore. The service accepts either.
+ */
+import type { Order } from "./order.js";
+
+export interface IOrderStore {
+  save(order: Order): void;
+  get(id: string): Order | undefined;
+  getByTag(tagId: number): Order | undefined;
+  listOpen(status?: Order["status"]): Order[];
+  listAll(): Order[];
+  delete(id: string): void;
+}
+
+/**
+ * In-memory order store. For tests and quick demos.
  * Pure logic, no network.
  */
 
-import type { Order } from "./order.js";
-
-export class OrderStore {
+export class OrderStore implements IOrderStore {
   private orders = new Map<string, Order>();
   private byTag = new Map<number, string>(); // tagId → orderId
 

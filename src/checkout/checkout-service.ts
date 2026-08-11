@@ -20,7 +20,7 @@ import {
   type FeeBreakdown,
   type OrderAction,
 } from "./order.js";
-import { OrderStore } from "./order-store.js";
+import { OrderStore, type IOrderStore } from "./order-store.js";
 import { TagPool } from "./tag-pool.js";
 import { matchPaymentToOrder, matchPaymentToFlowCOrder } from "./matcher.js";
 import { signWebhook, deliverWebhook, type SignedWebhook } from "./webhook.js";
@@ -100,7 +100,7 @@ export interface CreateOrderInput {
 }
 
 export class CheckoutService {
-  private store = new OrderStore();
+  private store: IOrderStore;
   private tagPool = new TagPool();
   private idCounter = 0;
   private fees: FeeParams | undefined;
@@ -112,7 +112,10 @@ export class CheckoutService {
     private executor: Executor,
     private assetManager: AssetManagerClient,
     private redeemer?: Redeemer,
-  ) {}
+    store?: IOrderStore,
+  ) {
+    this.store = store ?? new OrderStore();
+  }
 
   /** Load + cache live fee params (mint + redeem). */
   async loadFees(): Promise<FeeParams> {
@@ -484,7 +487,7 @@ export class CheckoutService {
   }
 
   // --- test helpers ---
-  _getStore(): OrderStore {
+  _getStore(): IOrderStore {
     return this.store;
   }
   _getTagPool(): TagPool {

@@ -4,4 +4,7 @@ dist/
 .env.*
 !.env.example
 *.log
+*.db
+*.db-wal
+*.db-shm
 .agent_tmp/

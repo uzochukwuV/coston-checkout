@@ -43,7 +43,7 @@ describe("HTTP API server", () => {
   let base: string;
 
   beforeAll(async () => {
-    server = createApiServer(stubService(order), 0);
+    server = createApiServer(stubService(order), { port: 0, polling: { enabled: false } });
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => {
         const addr = server.address();

@@ -11,12 +11,26 @@
  *
  * No framework dependency — uses node:http. Business logic lives in
  * CheckoutService; this is a thin transport layer.
+ *
+ * A background PollingLoop runs alongside the server so settlement happens
+ * automatically (no manual /admin/poll needed). The loop polls XRPL for Core
+ * Vault payments, matches them to open orders, and settles via FDC proofs.
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { CheckoutService } from "../checkout/checkout-service.js";
+import { PollingLoop, type PollingLoopOptions } from "../checkout/polling-loop.js";
 
-export function createApiServer(svc: CheckoutService, port = 3000) {
+export interface ApiServerOptions {
+  port?: number;
+  /** Polling loop config; pass `{ enabled: false }` to disable auto-settlement. */
+  polling?: PollingLoopOptions & { enabled?: boolean };
+}
+
+export function createApiServer(svc: CheckoutService, opts: ApiServerOptions = {}) {
+  const port = opts.port ?? 3000;
+  let pollingLoop: PollingLoop | undefined;
+
   const server = createServer((req, res) => {
     handle(req, res).catch((e) => {
       if (!res.headersSent) {
@@ -25,6 +39,21 @@ export function createApiServer(svc: CheckoutService, port = 3000) {
       }
     });
   });
+
+  server.on("close", () => {
+    pollingLoop?.stop();
+  });
+
+  const pollEnabled = opts.polling?.enabled !== false;
+  if (pollEnabled) {
+    pollingLoop = new PollingLoop(svc, {
+      intervalMs: opts.polling?.intervalMs ?? 5000,
+      initialDelayMs: opts.polling?.initialDelayMs,
+      onError: opts.polling?.onError ?? ((e, cycle) => console.error(`[poll #${cycle}]`, e.message)),
+      onCycle: opts.polling?.onCycle,
+    });
+    pollingLoop.start();
+  }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const send = (code: number, body: unknown): void => {
