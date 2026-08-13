@@ -1,14 +1,17 @@
 /**
  * API client — thin typed wrapper over the backend REST endpoints.
  *
- * In dev, Vite proxies /api → http://localhost:3000 (see vite.config.ts).
- * In production, set VITE_API_BASE to the backend URL.
+ * In dev, Vite proxies /api → http://localhost:3000 (see vite.config.ts), and
+ * the proxy strips the /api prefix before forwarding.
+ * In production, set VITE_API_BASE to the backend URL (no trailing /api).
  */
 
 import type { Order, CreateOrderRequest } from "./types";
 
 const BASE = import.meta.env.VITE_API_BASE ?? "";
-const PREFIX = BASE ? `${BASE}/api` : "/api";
+// Dev: "/api/orders" → Vite proxy strips /api → backend /orders
+// Prod: BASE + "/orders" → backend /orders directly
+const PREFIX = BASE ? BASE : "/api";
 
 class ApiError extends Error {
   constructor(
