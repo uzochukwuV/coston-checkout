@@ -20,6 +20,10 @@ export interface ResolvedAddresses {
   registry: string;
   assetManagerFXRP: string;
   fxrpToken: string;
+  fdcHub: string;
+  fdcRequestFeeConfigurations: string;
+  relay: string;
+  flareSystemsManager: string;
 }
 
 export async function resolveAddresses(rpcUrl: string): Promise<ResolvedAddresses> {
@@ -35,9 +39,20 @@ export async function resolveAddresses(rpcUrl: string): Promise<ResolvedAddresse
   );
   const fxrpToken = (await assetManager.fAsset()) as string;
 
+  const [fdcHub, fdcRequestFeeConfigurations, relay, flareSystemsManager] = await Promise.all([
+    registry.getContractAddressByName("FdcHub"),
+    registry.getContractAddressByName("FdcRequestFeeConfigurations"),
+    registry.getContractAddressByName("Relay"),
+    registry.getContractAddressByName("FlareSystemsManager"),
+  ]);
+
   return {
     registry: FLARE_CONTRACTS_REGISTRY_ADDRESS,
     assetManagerFXRP,
     fxrpToken,
+    fdcHub,
+    fdcRequestFeeConfigurations,
+    relay,
+    flareSystemsManager,
   };
 }

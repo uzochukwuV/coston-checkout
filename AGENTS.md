@@ -106,3 +106,60 @@
 - **Refund policy**: `decideRefundPolicy` — OVERPAID→CREDIT, UNDERPAID→REJECT (customer recovers via Core Vault), REDEEM_DEFAULTED→RETRY (attempts<max) or REFUND (attempts exhausted). `computeRefundAmount` = customer payment − sunk mint fee (operator waives its fee on refund).
 - **Service orchestration**: `settleOrder` dispatches Flow A (mint→SETTLED) or Flow B (mint→MINTED→redeem→REDEEMED). `handleRedemptionDefault` + `applyRetryOrRefund` + `refundOrder` implement the retry/refund loop. Webhook payload extended with settlementMode, merchantXrpDrops, redemptionRequestId, full feeBreakdown.
 - **Limitations**: FDC round discovery still stubbed (Phase 1 carryover). `confirmXRPRedemptionPayment` / `redemptionPaymentDefault(proof, requestId)` are wired in the redeemer/service but not exercised live (needs funded wallets + a real agent default). Refund is a stub (no XRPL Payment broadcast). REDEEMED is marked optimistically once redeemWithTag is accepted; agent-payout confirmation polling deferred.
+
+## Phase 3 — FDC live integration (DONE, e2e mint verified on Coston2)
+
+### FDC proof pipeline (verified live)
+- **FdcHubClient** (`src/chain/fdc-hub.ts`): `requestAttestation(abiEncodedRequest)` submits on-chain; fee via `FeeConfigurations.getRequestFee`; round id from `FlareSystemsManager.firstVotingRoundIdStartingAtTimestamp(blockTimestamp)`. Cost: ~1000 wei on Coston2.
+- **Proof fetch**: DA layer endpoint `api/v1/fdc/proof-by-request-round-raw` (POST `{votingRoundId, requestBytes}`). Returns `{proof: string[], response_hex: string}`. The DA layer API can lag 30-60s behind on-chain Relay finalization — retry with backoff.
+- **Protocol ID**: FdcVerification.fdcProtocolId() = **200** (NOT 0). Relay.merkleRoots(200, round) has the populated root; merkleRoots(0, round) is empty. Always use protocol ID 200 for XRP payment verification.
+- **Response decoding**: response_hex (896 bytes) is `abi.encode(Response)` — starts with a 0x0020 outer offset. Decodes cleanly as the IXRPPayment.Response struct via the canonical 16-field ABI.
+
+### calldata encoding for executeDirectMinting (the critical fix)
+- `executeDirectMinting(Proof)` takes a **single dynamic-tuple arg** → outer encoding = `[offset_to_Proof=0x20] + Proof_encoding`.
+- Inside `Proof = (bytes32[] merkleProof, Response data)`: `[offset_merkle=0x40, offset_data] + merkleProof_enc + response_enc`.
+- **Both** `coder.encode(["bytes32[]"], [...])` and `response_hex` (= `abi.encode(Response)`) wrap their payload in a 32-byte outer offset envelope ([0x0020]+data). Inside the Proof tuple the head already provides the offset, so **strip the leading 32 bytes (64 hex chars after "0x") from each** before concatenating.
+- Fixed `encodeProofCalldata` in `src/checkout/executor.ts` — output now byte-identical to ethers AbiCoder. Verified: `eth_call` returns `PaymentAlreadyConfirmed` (0x18dce79f), proving the contract decodes the proof correctly.
+
+### Error 0x18dce79f = PaymentAlreadyConfirmed()
+- Selector `0x18dce79f` = `PaymentAlreadyConfirmed()` (found by cloning flare-foundation/fassets and matching all 315 error selectors). It is thrown when `verifiedPayments[transactionId] != 0`.
+- **An executor bot races to mint finalized attestations** (anyone can call executeDirectMinting and earn the executor fee). If you see PaymentAlreadyConfirmed, the mint already happened — the merchant still receives FXRP, just minted by someone else. Treat as success.
+- Other direct-minting errors (all in DirectMintingFacet.sol): InvalidExecutor, InvalidReceivingAddress, AmountNotPositive, PaymentIsCoreVaultDonation, ForbiddenPaymentReference, DirectMintingStillDelayed, MissingMintingTagManager, MissingSmartAccountManager, DirectMintingNotUnblocked, NoValueExpected, NoDataExpectedForDirectMinting.
+
+### E2E live mint result (Coston2, verified)
+- XRPL Payment 1 XRP → Core Vault with 32B direct-minting memo → FDC attestation (round 1422077) → Merkle proof → executeDirectMinting.
+- Merchant received **0.8 FTestXRP** (800,000 UBA) net: 1,000,000 received − 100,000 minting fee (minimumFeeUBA floored) − 100,000 executor fee.
+- Fee structure: `mintingFee = max(minimumFeeUBA, receivedAmount * feeBIPS / 10000)`; for 1 XRP the floor (100,000) dominates over the bips amount (2,500).
+
+## Frontend (React + Vite + wagmi + viem)
+
+### Stack
+- **React 19 + Vite 5 + TypeScript** — SPA in `/workspace/project/frontend/`
+- **wagmi + viem** — wallet connection, on-chain reads (FXRP ERC-20 balance)
+- **@tanstack/react-query** — order polling (auto-stops at terminal status)
+- **react-router-dom** — routes: `/` (merchant dashboard), `/checkout` (new order), `/checkout/:orderId` (order detail)
+- **qrcode.react** — XRPL payment QR code on the checkout page
+- **@flarenetwork/flare-wagmi-periphery-package** — Coston2 chain config + injected connector
+- Vite dev proxy: `/api` → `http://localhost:3000` (backend API)
+
+### Pages
+- **MerchantDashboard** (`src/pages/MerchantDashboard.tsx`): API health indicator, stats cards (total/settled/pending/FXRP), create-order form, order table with live status, optional on-chain FXRP balance via `useReadContract`.
+- **CheckoutPage** (`src/pages/CheckoutPage.tsx`): order creation form → payment instructions (Core Vault address, amount, memo, QR code, countdown timer) → settlement progress (XRPL tx hash, Flare mint tx, fee breakdown).
+
+### Build / dev
+- `cd frontend && npm install` → install deps
+- `npm run dev` → vite dev server on :5173 (proxies `/api` to :3000)
+- `npm run build` → production bundle in `frontend/dist/`
+- `npx tsc --noEmit` → type check (currently clean)
+- Frontend build verified: 4697 modules transformed, ~383 kB JS (119 kB gzip)
+
+### Backend CORS
+- `src/api/server.ts` now sends `Access-Control-Allow-Origin: *` + handles `OPTIONS` preflight, so the frontend can call the API directly or through the Vite proxy.
+
+### Key files
+- `src/types.ts` — shared Order, Quote, FeeBreakdown types + status helpers (statusS tepIndex, FLOW_STEPS, isTerminal, dropsToXrp)
+- `src/api.ts` — type-safe API client (createOrder, getOrder, listOrders, pollOnce, expire, healthz)
+- `src/wagmi.ts` — wagmi config (Coston2 chain, injected connector, FXRP token address)
+- `src/xrpl.ts` — XRPL payment URI builder + payment JSON generator (Core Vault address, memo hex encoding)
+- `src/components/` — CopyField, StatusBadge, StatusFlow, CountdownTimer
+- `src/hooks/useOrderPoll.ts` — react-query hook that polls every 3s, stops at terminal status

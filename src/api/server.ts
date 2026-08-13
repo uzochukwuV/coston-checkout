@@ -58,13 +58,29 @@ export function createApiServer(svc: CheckoutService, opts: ApiServerOptions = {
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const send = (code: number, body: unknown): void => {
       if (res.headersSent) return;
-      res.writeHead(code, { "Content-Type": "application/json" });
+      res.writeHead(code, {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
       // Orders carry BigInt amounts; serialize as strings.
       res.end(JSON.stringify(body, (_k, v) => (typeof v === "bigint" ? v.toString() : v), 2));
     };
 
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
     const path = url.pathname;
+
+    // Handle CORS preflight
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+      });
+      res.end();
+      return;
+    }
 
     if (req.method === "GET" && path === "/healthz") {
       return send(200, { ok: true });

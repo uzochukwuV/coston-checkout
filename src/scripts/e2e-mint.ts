@@ -25,16 +25,17 @@
  * Usage: npx tsx src/scripts/e2e-mint.ts
  *
  * What this script does, step by step:
- *   1. Resolve live contract addresses (AssetManager, FXRP token, Core Vault)
+ *   1. Resolve live contract addresses (AssetManager, FXRP token, Core Vault, FdcHub, Relay)
  *   2. Read live fee params (minimum fee, fee BIPS, executor fee)
  *   3. Generate (or use env) merchant Flare address — the FXRP recipient
  *   4. Build the direct-minting memo: 0x4642505266410018 + zeros + merchant
  *   5. Submit an XRPL Payment from the customer wallet to the Core Vault
  *   6. Print the XRPL tx hash and wait for ledger close
- *   7. Poll the FDC DA layer until the proof is finalized (getLatestProof)
- *   8. Call executeDirectMinting(proof) via the operator wallet (real gas)
- *   9. Wait for the Flare tx to confirm
- *  10. Verify: FXRP.balanceOf(merchant) > 0
+ *   7. Prepare FDC attestation request, submit via FdcHub.requestAttestation()
+ *   8. Poll Relay.isFinalized(200, roundId) until the FDC round finalizes
+ *   9. Fetch the Merkle proof from the DA layer (get-proof-round-id-bytes)
+ *  10. Call executeDirectMinting(proof) via the operator wallet (real gas)
+ *  11. Verify: FXRP.balanceOf(merchant) > 0
  */
 
 import { JsonRpcProvider, Wallet, Contract, formatEther } from "ethers";
@@ -42,6 +43,7 @@ import { Client, Wallet as XrplWallet } from "xrpl";
 import { resolveAddresses } from "../chain/registry.js";
 import { AssetManagerClient } from "../chain/asset-manager.js";
 import { FdcClient } from "../chain/fdc.js";
+import { FdcHubClient } from "../chain/fdc-hub.js";
 import { Executor } from "../checkout/executor.js";
 import { encodeDirectMintingMemo } from "../memo/encoder.js";
 
@@ -127,7 +129,7 @@ async function main() {
   const customerWallet = XrplWallet.fromSeed(xrplSeed);
   console.log(`  Customer r-address: ${customerWallet.address}`);
 
-  const prepared = await xrplClient.autofill({
+  const preparedTx = await xrplClient.autofill({
     TransactionType: "Payment",
     Account: customerWallet.address,
     Destination: params.coreVaultXrplAddress,
@@ -135,14 +137,13 @@ async function main() {
     Memos: [
       {
         Memo: {
-          MemoType: "4642505266410018", // direct-minting prefix as MemoType
           MemoData: memoHex,
         },
       },
     ],
   });
 
-  const signed = customerWallet.sign(prepared);
+  const signed = customerWallet.sign(preparedTx);
   const txResponse = await xrplClient.submit(signed.tx_blob);
   const txHash = signed.hash;
   console.log(`  XRPL tx hash: ${txHash}`);
@@ -156,56 +157,128 @@ async function main() {
 
   // --- Step 6: wait for ledger close ---
   log("6", "XRPL Payment submitted. Waiting for ledger confirmation...");
-  await sleep(4000); // XRPL testnet closes a ledger every ~4s
-  const txResult = await xrplClient.request({ command: "tx", transaction: txHash });
-  console.log(`  Ledger index: ${txResult.result.ledger_index ?? "pending"}`);
-  console.log(`  Validated:     ${txResult.result.validated ?? false}`);
+  // Poll until the XRPL tx is in a validated ledger (testnet closes ~every 4s).
+  let validated = false;
+  for (let i = 0; i < 30; i++) {
+    await sleep(4000);
+    const txResult = await xrplClient.request({ command: "tx", transaction: txHash });
+    console.log(`  Ledger index: ${txResult.result.ledger_index ?? "pending"}, Validated: ${txResult.result.validated ?? false}`);
+    if (txResult.result.validated) {
+      validated = true;
+      break;
+    }
+  }
+  if (!validated) {
+    console.error("ERROR: XRPL tx did not validate within 120s");
+    await xrplClient.disconnect();
+    process.exit(1);
+  }
   await xrplClient.disconnect();
 
-  // --- Step 7: poll FDC until proof is finalized ---
-  log("7", `Polling FDC DA layer for attestation finalization (every ${FDC_POLL_MS}ms, timeout ${FDC_TIMEOUT_MS / 1000}s)...`);
-  console.log("  (The FDC attestation typically finalizes 90–180s after the XRPL tx.)");
-
+  // --- Step 7: prepare + submit FDC attestation request on-chain ---
+  log("7", "Preparing + submitting FDC attestation via FdcHub.requestAttestation()...");
+  const deadline = Date.now() + FDC_TIMEOUT_MS;
   const fdc = new FdcClient();
+  // The verifier may need a few seconds to index the XRPL tx after validation.
+  let prepared;
+  for (let i = 0; i < 20; i++) {
+    try {
+      prepared = await fdc.prepareXrpPaymentProof(txHash, operator.address, true);
+      break;
+    } catch (e) {
+      const msg = (e as Error).message;
+      console.log(`  ... verifier not ready yet (${msg.slice(0, 80)}). Retrying in 10s...`);
+      await sleep(10000);
+    }
+  }
+  if (!prepared) {
+    console.error("ERROR: FDC verifier could not prepare the attestation after 200s");
+    process.exit(1);
+  }
+  console.log(`  Prepared request: ${prepared.abiEncodedRequest.slice(0, 60)}...`);
+  const fdcHub = new FdcHubClient({
+    rpcUrl: RPC_URL,
+    fdcHubAddress: addresses.fdcHub,
+    feeConfigAddress: addresses.fdcRequestFeeConfigurations,
+    relayAddress: addresses.relay,
+    flareSystemsManagerAddress: addresses.flareSystemsManager,
+    privateKey: operatorKey,
+  });
+  const fee = await fdcHub.getRequestFee(prepared.abiEncodedRequest);
+  console.log(`  Attestation fee: ${fee} wei (${formatEther(fee)} C2FLR)`);
+  const submission = await fdcHub.submitAttestation(prepared.abiEncodedRequest);
+  console.log(`  ✓ Attestation submitted! Flare tx: ${submission.flareTxHash}`);
+  console.log(`  Block ${submission.blockNumber} (ts ${submission.blockTimestamp}), FDC round ${submission.roundId}`);
+
+  // --- Step 8: poll Relay.isFinalized until the FDC round finalizes ---
+  log("8", `Polling Relay.isFinalized(200, round ${submission.roundId})...`);
+  console.log("  (FDC rounds finalize ~90–180s after submission.)");
+  // The attestation proof lives in the submission round's Merkle tree — keep
+  // polling THAT specific round until the Relay contract marks it finalized.
+  let finalizedRound = 0;
+  while (Date.now() < deadline) {
+    const ok = await fdcHub.isFinalized(submission.roundId);
+    if (ok) {
+      finalizedRound = submission.roundId;
+      console.log(`  ✓ FDC round ${submission.roundId} finalized!`);
+      break;
+    }
+    process.stdout.write(`  ... round ${submission.roundId} not finalized yet. Retrying in ${FDC_POLL_MS / 1000}s\n`);
+    await sleep(FDC_POLL_MS);
+  }
+  if (!finalizedRound) {
+    console.error(`\nERROR: FDC round ${submission.roundId} did not finalize within ${FDC_TIMEOUT_MS / 1000}s.`);
+    process.exit(1);
+  }
+
+  // --- Step 9: fetch the Merkle proof from the DA layer ---
+  log("9", `Fetching Merkle proof from DA layer (round ${finalizedRound})...`);
   const executor = new Executor({
     rpcUrl: RPC_URL,
     assetManagerAddress: addresses.assetManagerFXRP,
     fdc,
-    proofOwner: operator.address, // the executor is the proof owner
+    proofOwner: operator.address,
     privateKey: operatorKey,
-    dryRun: false, // LIVE — will broadcast
+    dryRun: false,
   });
-
-  const deadline = Date.now() + FDC_TIMEOUT_MS;
-  let proof = null;
-  while (Date.now() < deadline) {
+  let proof;
+  // The DA layer API can lag ~30–60s behind on-chain Relay finalization.
+  // Retry with backoff until the proof is available.
+  for (let attempt = 1; attempt <= 10; attempt++) {
     try {
-      proof = await executor.fetchProof(txHash, true);
-      console.log(`  ✓ FDC proof finalized! Round ${proof.roundId}, ${proof.proof.length} Merkle siblings`);
+      proof = await fdc.getProof(finalizedRound, prepared.abiEncodedRequest);
+      console.log(`  ✓ Proof fetched! ${proof.proof.length} Merkle siblings, data=${proof.data.slice(0, 40)}...`);
       break;
     } catch (e) {
-      const msg = (e as Error).message;
-      process.stdout.write(`  ... not finalized yet (${msg.slice(0, 80)}). Retrying in ${FDC_POLL_MS / 1000}s\r`);
-      await sleep(FDC_POLL_MS);
+      console.log(`  ... proof not indexed yet (attempt ${attempt}/10): ${((e as Error).message).slice(0, 60)}`);
+      if (attempt < 10) await sleep(30000);
     }
   }
-
   if (!proof) {
-    console.error(`\nERROR: FDC proof did not finalize within ${FDC_TIMEOUT_MS / 1000}s. Try again later.`);
+    console.error(`  ✗ Proof fetch failed after 10 retries (~5 min)`);
     process.exit(1);
   }
 
-  // --- Step 8: call executeDirectMinting on Flare ---
-  log("8", "Submitting executeDirectMinting on Flare (operator pays gas)...");
+  // --- Step 10: call executeDirectMinting on Flare ---
+  log("10", "Submitting executeDirectMinting on Flare (operator pays gas)...");
+  // NOTE: an executor bot may race us to the minting (anyone can call
+  // executeDirectMinting and earn the executor fee). PaymentAlreadyConfirmed
+  // (0x18dce79f) means the mint already happened — the merchant still gets
+  // their FXRP, just minted by someone else. Treat this as success.
   const result = await executor.executeDirectMinting(proof);
   if (!result.ok || !result.flareTxHash) {
-    console.error(`  ✗ executeDirectMinting failed: ${result.error}`);
-    process.exit(1);
+    if (result.error?.includes("18dce79f") || result.error?.includes("PaymentAlreadyConfirmed")) {
+      console.log("  ⚡ PaymentAlreadyConfirmed — an executor bot minted first; merchant still receives FXRP");
+    } else {
+      console.error(`  ✗ executeDirectMinting failed: ${result.error}`);
+      process.exit(1);
+    }
+  } else {
+    console.log(`  ✓ Flare tx confirmed: ${result.flareTxHash}`);
   }
-  console.log(`  ✓ Flare tx confirmed: ${result.flareTxHash}`);
 
-  // --- Step 9: verify FXRP balance ---
-  log("9", "Verifying FXRP minted to merchant address...");
+  // --- Step 11: verify FXRP balance ---
+  log("11", "Verifying FXRP minted to merchant address...");
   const fxrp = new Contract(addresses.fxrpToken, ERC20_ABI, provider);
   const merchantBalance = await fxrp.balanceOf(merchantFlare);
   const decimals = await fxrp.decimals();
@@ -220,10 +293,11 @@ async function main() {
 
   // --- Summary ---
   console.log("\n=== E2E Test Complete ===");
-  console.log(`  XRPL tx:  ${txHash}`);
-  console.log(`  Flare tx: ${result.flareTxHash}`);
-  console.log(`  FDC round: ${proof.roundId}`);
-  console.log(`  Merchant:  ${merchantFlare}`);
+  console.log(`  XRPL tx:   ${txHash}`);
+  console.log(`  Flare tx:  ${result.flareTxHash}`);
+  console.log(`  Attest tx: ${submission.flareTxHash}`);
+  console.log(`  FDC round: ${finalizedRound}`);
+  console.log(`  Merchant: ${merchantFlare}`);
   console.log(`  FXRP minted: ${merchantBalance} (raw)`);
 }
 

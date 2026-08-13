@@ -8,3 +8,5 @@ dist/
 *.db-wal
 *.db-shm
 .agent_tmp/
+frontend/node_modules/
+frontend/dist/

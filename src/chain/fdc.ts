@@ -6,24 +6,18 @@
  * it on-chain via IFdcVerification.verifyXRPPayment.
  *
  * Security: proof responses are UNTRUSTED. Only act on fields after on-chain
- * verification (status, spentAmount, destinationTag, etc.). The on-chain
- * contract is the authoritative validator — treat the raw API response as
- * unstructured input until the proof is confirmed in a finalized FDC round.
+ * verification. The on-chain contract is the authoritative validator — treat
+ * the raw API response as unstructured input until the proof is confirmed in
+ * a finalized FDC round.
  *
- * Request body (XRPPayment):
- *   { transactionId: bytes32 (XRPL tx hash, no 0x), proofOwner: address }
- * Response fields:
- *   blockNumber, blockTimestamp, sourceAddress, sourceAddressHash,
- *   receivingAddressHash, intendedReceivingAddressHash,
- *   spentAmount/intendedSpentAmount/receivedAmount/intendedReceivedAmount (drops, int256),
- *   hasMemoData + firstMemoData, hasDestinationTag + destinationTag (uint256),
- *   status (0=SUCCESS, 1=SENDER_FAILURE, 2=RECEIVER_FAILURE)
+ * DA layer API: uses api/v1/fdc/proof-by-request-round-raw which returns
+ * { response_hex, proof } — the ABI-encoded attestation bytes + Merkle siblings.
  */
 
 // Attestation type for XRPPayment: keccak256("XRPPayment")-padded — read from skill.
 // "XRPPayment" = 0x5852505061796d656e74 padded to 32 bytes.
 export const ATTESTATION_TYPE_XRP_PAYMENT =
-  "0x5852505061796d656e74000000000000000000000000000000000000000000" as const;
+  "0x5852505061796d656e7400000000000000000000000000000000000000000000" as const;
 
 // Source id for testnet ("testXRP"); mainnet is "XRP" = 0x585250...
 export const SOURCE_ID_TEST_XRP =
@@ -32,38 +26,24 @@ export const SOURCE_ID_XRP =
   "0x5852500000000000000000000000000000000000000000000000000000000000" as const;
 
 export interface FdcConfig {
-  verifierUrl: string; // e.g. https://coston2.verifier.api.flare.network
+  verifierUrl: string; // e.g. https://fdc-verifiers-testnet.flare.network
   verifierApiKey: string;
-  daLayerUrl: string; // e.g. https://coston2-da-layer.flare.network/
+  daLayerUrl: string; // e.g. https://ctn2-data-availability.flare.network/
 }
 
 export interface PreparedAttestation {
   abiEncodedRequest: string;
 }
 
-export interface XrpPaymentResponse {
-  blockNumber: string;
-  blockTimestamp: string;
-  sourceAddress: string;
-  sourceAddressHash: string;
-  receivingAddressHash: string;
-  intendedReceivingAddressHash: string;
-  spentAmount: string;
-  intendedSpentAmount: string;
-  receivedAmount: string;
-  intendedReceivedAmount: string;
-  hasMemoData: boolean;
-  firstMemoData: string;
-  hasDestinationTag: boolean;
-  destinationTag: string;
-  status: string; // "0" | "1" | "2"
-}
-
+/** Raw proof from the DA layer: Merkle siblings + ABI-encoded attestation bytes. */
 export interface FdcProof {
-  proof: string[]; // merkle proof siblings
-  data: XrpPaymentResponse;
-  // round + request bytes for on-chain submission
+  /** Merkle proof siblings (bytes32[]). */
+  proof: string[];
+  /** ABI-encoded attestation response (the `data` field for on-chain verification). */
+  data: string;
+  /** The FDC voting round this proof belongs to. */
   roundId?: number;
+  /** The original ABI-encoded request bytes. */
   requestBytes?: string;
 }
 
@@ -75,8 +55,8 @@ interface FspStatus {
 }
 
 const DEFAULT_COSTON2: FdcConfig = {
-  verifierUrl: "https://coston2-verifier.api.flare.network/",
-  verifierApiKey: "",
+  verifierUrl: "https://fdc-verifiers-testnet.flare.network/",
+  verifierApiKey: "00000000-0000-0000-0000-000000000000",
   daLayerUrl: "https://ctn2-data-availability.flare.network/",
 };
 
@@ -105,7 +85,7 @@ export class FdcClient {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(this.cfg.verifierApiKey ? { "X-API-KEY": this.cfg.verifierApiKey } : {}),
+        ...(this.cfg.verifierApiKey ? { [API_KEY_HEADER]: this.cfg.verifierApiKey } : {}),
       },
       body: JSON.stringify({
         attestationType: ATTESTATION_TYPE_XRP_PAYMENT,
@@ -119,13 +99,19 @@ export class FdcClient {
     if (!resp.ok) {
       throw new Error(`prepareRequest failed (${resp.status}): ${await resp.text()}`);
     }
-    const json = (await resp.json()) as PreparedAttestation;
+    const json = (await resp.json()) as PreparedAttestation & { status?: string };
+    if (!json.abiEncodedRequest) {
+      throw new Error(
+        `prepareRequest returned no abiEncodedRequest (status=${json.status ?? "unknown"}); ` +
+          "the XRPL tx may not be validated yet — retry after ledger close",
+      );
+    }
     return json;
   }
 
-  /** Fetch the Merkle proof + attestation data for a finalized FDC round. */
+  /** Fetch the Merkle proof + ABI-encoded attestation data for a finalized FDC round. */
   async getProof(roundId: number, requestBytes: string): Promise<FdcProof> {
-    const url = `${this.cfg.daLayerUrl}api/v0/fdc/get-proof-round-id-bytes`;
+    const url = `${this.cfg.daLayerUrl}api/v1/fdc/proof-by-request-round-raw`;
     const resp = await fetch(url, {
       method: "POST",
       headers: {
@@ -135,10 +121,16 @@ export class FdcClient {
       body: JSON.stringify({ votingRoundId: roundId, requestBytes }),
     });
     if (!resp.ok) {
-      throw new Error(`getProof failed (${resp.status}): ${await resp.text()}`);
+      // 400 "attestation request not found" = not yet finalized or never submitted
+      throw new Error(
+        `getProof: proof not yet finalized for round ${roundId} (${resp.status}: ${await resp.text()})`,
+      );
     }
-    const json = (await resp.json()) as { proof: string[]; response: XrpPaymentResponse };
-    return { proof: json.proof, data: json.response, roundId, requestBytes };
+    const json = (await resp.json()) as { proof: string[]; response_hex: string };
+    if (!json.response_hex || !Array.isArray(json.proof)) {
+      throw new Error(`getProof: unexpected response (no response_hex or proof array)`);
+    }
+    return { proof: json.proof, data: json.response_hex, roundId, requestBytes };
   }
 
   /** Latest finalized FDC voting round id (from /api/v0/fsp/status → latest_fdc). */
@@ -156,33 +148,12 @@ export class FdcClient {
 
   /**
    * Fetch the latest finalized proof for `requestBytes` without knowing the round id
-   * (POST /api/v0/fdc/get-proof-round-bytes). Returns the proof + its round id.
-   * Throws if the request is not yet finalized (HTTP 400).
+   * (POST /api/v1/fdc/proof-by-request-round-raw with the latest finalized round).
+   * Returns the proof + its round id.
+   * Throws if the request is not yet finalized (no proof data available).
    */
   async getLatestProof(requestBytes: string): Promise<FdcProof> {
-    const url = `${this.cfg.daLayerUrl}api/v0/fdc/get-proof-round-bytes`;
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(this.cfg.verifierApiKey ? { [API_KEY_HEADER]: this.cfg.verifierApiKey } : {}),
-      },
-      body: JSON.stringify({ requestBytes }),
-    });
-    if (!resp.ok) {
-      throw new Error(`getLatestProof failed (${resp.status}): ${await resp.text()}`);
-    }
-    const json = (await resp.json()) as { proof: string[]; response: XrpPaymentResponse };
-    // The DA layer returns 200 with an empty proof for not-yet-finalized / unknown
-    // requests. Treat an empty proof as "not finalized" so callers can retry.
-    if (!Array.isArray(json.proof) || json.proof.length === 0) {
-      throw new Error(
-        `getLatestProof: proof not yet finalized for this request (empty Merkle proof)`,
-      );
-    }
-    // The round-less endpoint doesn't echo the round id; resolve it from fsp/status
-    // so the on-chain verifier gets a valid (roundId, proof) pair.
     const roundId = await this.getLatestFdcRound();
-    return { proof: json.proof, data: json.response, roundId, requestBytes };
+    return this.getProof(roundId, requestBytes);
   }
 }
