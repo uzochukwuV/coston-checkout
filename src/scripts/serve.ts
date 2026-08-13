@@ -26,6 +26,7 @@ import { resolveAddresses } from "../chain/registry.js";
 import { AssetManagerClient } from "../chain/asset-manager.js";
 import { FtsoClient } from "../chain/ftso.js";
 import { XrplWatcher } from "../chain/xrpl-watcher.js";
+import { XrplPayer } from "../chain/xrpl-payer.js";
 import { FdcClient } from "../chain/fdc.js";
 import { CheckoutService, type CheckoutConfig } from "../checkout/checkout-service.js";
 import { Executor } from "../checkout/executor.js";
@@ -77,10 +78,20 @@ async function main() {
     merchantXrplDestinationTag: process.env.MERCHANT_XRPL_TAG ? Number(process.env.MERCHANT_XRPL_TAG) : undefined,
     webhookUrl: process.env.WEBHOOK_URL,
     webhookSecret: process.env.WEBHOOK_SECRET ?? "default-secret",
+    customerRefundAddress: process.env.CUSTOMER_REFUND_XRPL,
+    customerRefundDestinationTag: process.env.CUSTOMER_REFUND_XRPL_TAG
+      ? Number(process.env.CUSTOMER_REFUND_XRPL_TAG)
+      : undefined,
   };
 
+  const xrplPayer = new XrplPayer({
+    wsUrl: xrplWsUrl,
+    seed: process.env.XRPL_REFUND_SEED,
+    dryRun,
+  });
+
   const store = new SqliteOrderStore(dbPath);
-  const svc = new CheckoutService(cfg, ftso, watcher, executor, assetManager, undefined, store);
+  const svc = new CheckoutService(cfg, ftso, watcher, executor, assetManager, undefined, xrplPayer, store);
 
   const server = createApiServer(svc, {
     port,

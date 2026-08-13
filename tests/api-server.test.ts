@@ -13,6 +13,7 @@ function stubService(order: Order): CheckoutService {
     createOrder: async () => order,
     getOrder: (id: string) => (id === order.id ? order : undefined),
     listOpen: () => [order],
+    listAll: () => [order],
     pollAndMatch: async () => [],
     expireStale: () => [],
   } as unknown as CheckoutService;

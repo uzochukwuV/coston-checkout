@@ -143,15 +143,20 @@
 - Vite dev proxy: `/api` → `http://localhost:3000` (backend API)
 
 ### Pages
-- **MerchantDashboard** (`src/pages/MerchantDashboard.tsx`): API health indicator, stats cards (total/settled/pending/FXRP), create-order form, order table with live status, optional on-chain FXRP balance via `useReadContract`.
-- **CheckoutPage** (`src/pages/CheckoutPage.tsx`): order creation form → payment instructions (Core Vault address, amount, memo, QR code, countdown timer) → settlement progress (XRPL tx hash, Flare mint tx, fee breakdown).
+- **MerchantDashboard** (`src/pages/MerchantDashboard.tsx`): 2-column layout. Left sidebar: wallet info (FXRP on-chain balance when connected), create-order form, API health. Right column: analytics stat cards (total/settled/pending/FXRP), volume bar chart (last 10 orders), orders table with filter pills (all/pending/settled/expired), live status, created date, settle/refund tx links. Uses `listAll()` (all orders, not just open).
+- **CheckoutPage** (`src/pages/CheckoutPage.tsx`): order creation form → Shopify-style order detail with: order ID prominent, status badge + countdown, progress bar (Awaiting→Detected→Minting→Minted), amount summary card, **fee breakdown visible before payment** (customer sends, mint fee, service fee, merchant receives), QR code + Core Vault + memo with copy buttons, "XRP Connected" shortcut when wallet linked, terminal states (settled/refunded/expired/failed) with icons. Route `/checkout/:orderId` references a specific order.
+
+### Wallet connection (shared state)
+- **XrpWalletProvider** (`src/components/XrpWalletProvider.tsx`): React context wrapping the app in `main.tsx`. Shares XRP wallet state between WalletBar (nav) and CheckoutPage (payment shortcut) so they stay in sync. State persisted to localStorage.
+- **useXrpWallet** (`src/hooks/useXrpWallet.ts`): Crossmark extension detection + manual address entry fallback. Read-only (no signing).
+- **WalletBar** (`src/components/WalletBar.tsx`): dual connection — Flare (wagmi/injected) + XRP (Crossmark/manual). Shows truncated address + disconnect.
 
 ### Build / dev
 - `cd frontend && npm install` → install deps
 - `npm run dev` → vite dev server on :5173 (proxies `/api` to :3000)
 - `npm run build` → production bundle in `frontend/dist/`
 - `npx tsc --noEmit` → type check (currently clean)
-- Frontend build verified: 4697 modules transformed, ~383 kB JS (119 kB gzip)
+- Frontend build verified: 4699 modules transformed, ~398 kB JS (123 kB gzip)
 
 ### Backend CORS
 - `src/api/server.ts` now sends `Access-Control-Allow-Origin: *` + handles `OPTIONS` preflight, so the frontend can call the API directly or through the Vite proxy.

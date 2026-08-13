@@ -4,6 +4,7 @@ import { useMutation } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
 import { api } from "../api";
 import { useOrderPoll } from "../hooks/useOrderPoll";
+import { useXrpWalletContext } from "../components/XrpWalletProvider";
 import { TESTNET_CORE_VAULT, buildXrplPaymentUri, buildXrplPaymentJson } from "../xrpl";
 import { CopyField } from "../components/CopyField";
 import { StatusFlow, StatusBadge } from "../components/StatusBadge";
@@ -34,32 +35,38 @@ export default function CheckoutPage() {
   // --- No order yet: show the order creation form ---
   if (!orderId || !poll.data) {
     return (
-      <div style={{ maxWidth: 480, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Checkout</h1>
-        <p className="dim" style={{ marginBottom: 32 }}>
-          Pay with XRP on XRPL. Receive FXRP on Flare. Gasless — you never need FLR.
-        </p>
-        <form onSubmit={handleCreate} className="card col">
+      <div className="checkout-layout">
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <h1 style={{ fontSize: 26, fontWeight: 800, marginBottom: 6 }}>FXRP Checkout</h1>
+          <p className="dim" style={{ fontSize: 15 }}>
+            Pay with XRP on XRPL. Receive FXRP on Flare. Gasless — you never need FLR.
+          </p>
+        </div>
+        <form onSubmit={handleCreate} className="card col" style={{ gap: 16 }}>
           <div>
             <label className="label">Amount (USD)</label>
-            <input
-              className="input"
-              type="number"
-              step="0.01"
-              min="0.01"
-              placeholder="10.00"
-              value={usdAmount}
-              onChange={(e) => setUsdAmount(e.target.value)}
-              disabled={createMutation.isPending}
-            />
+            <div style={{ position: "relative" }}>
+              <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--text-dim)", fontWeight: 700, fontSize: 18 }}>$</span>
+              <input
+                className="input"
+                type="number"
+                step="0.01"
+                min="0.01"
+                placeholder="10.00"
+                value={usdAmount}
+                onChange={(e) => setUsdAmount(e.target.value)}
+                disabled={createMutation.isPending}
+                style={{ paddingLeft: 30, fontSize: 18, fontWeight: 600 }}
+              />
+            </div>
           </div>
           {createMutation.isError && (
             <div style={{ color: "var(--danger)", fontSize: 14 }}>
               {(createMutation.error as Error).message}
             </div>
           )}
-          <button type="submit" className="btn btn-primary" disabled={createMutation.isPending || !usdAmount}>
-            {createMutation.isPending ? "Creating…" : "Create Order"}
+          <button type="submit" className="btn btn-primary" disabled={createMutation.isPending || !usdAmount} style={{ justifyContent: "center", padding: "14px 20px", fontSize: 16 }}>
+            {createMutation.isPending ? "Creating…" : "Create Checkout →"}
           </button>
         </form>
       </div>
@@ -81,19 +88,17 @@ function OrderDetail({ order, isLoading }: { order: Order; isLoading: boolean })
     memoHex,
   });
 
-  // Show payment instructions when waiting for payment
   const showPayment = order.status === "AWAITING_PAYMENT" || order.status === "CREATED";
 
   return (
-    <div style={{ maxWidth: 640, margin: "0 auto" }} className="col">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+    <div style={{ maxWidth: 600, margin: "0 auto" }} className="col">
+      {/* Order header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
         <div>
-          <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 4 }}>
-            Order {order.id.slice(0, 8)}
-          </h1>
-          <div className="dim" style={{ fontSize: 14 }}>
-            Pay {xrpAmount} XRP → receive FXRP on Flare
+          <div className="dim" style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Order
           </div>
+          <h1 className="mono" style={{ fontSize: 20, fontWeight: 700 }}>{order.id}</h1>
         </div>
         <div style={{ textAlign: "right" }}>
           <StatusBadge status={order.status} />
@@ -105,10 +110,27 @@ function OrderDetail({ order, isLoading }: { order: Order; isLoading: boolean })
         </div>
       </div>
 
-      <div className="card col">
-        <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Settlement Progress</h2>
+      {/* Progress bar */}
+      <div className="card" style={{ padding: 16 }}>
         <StatusFlow status={order.status} />
       </div>
+
+      {/* Amount summary */}
+      <div className="card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px" }}>
+        <div>
+          <div className="label" style={{ marginBottom: 2 }}>Total Due</div>
+          <div style={{ fontSize: 28, fontWeight: 800 }}>${order.quote.usdAmount.toFixed(2)}</div>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div className="label" style={{ marginBottom: 2 }}>Pay in XRP</div>
+          <div className="mono" style={{ fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>
+            {xrpAmount} XRP
+          </div>
+        </div>
+      </div>
+
+      {/* Fee transparency — always visible */}
+      {order.feeBreakdown && <FeeSummary order={order} />}
 
       {showPayment ? (
         <PaymentSection
@@ -119,16 +141,53 @@ function OrderDetail({ order, isLoading }: { order: Order; isLoading: boolean })
           paymentUri={paymentUri}
           destinationTag={order.tagId}
         />
+      ) : terminal ? (
+        <TerminalSection order={order} />
       ) : (
         <SettlementSection order={order} isLoading={isLoading} />
       )}
 
       {order.error && (
-        <div className="card" style={{ borderColor: "var(--danger)", background: "rgba(248,113,113,0.06)" }}>
+        <div className="card" style={{ borderColor: "var(--danger)", background: "var(--danger-light)" }}>
           <div className="label" style={{ color: "var(--danger)" }}>Error</div>
           <div style={{ fontSize: 14 }}>{order.error}</div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Fee transparency — shown before payment so the customer knows the breakdown. */
+function FeeSummary({ order }: { order: Order }) {
+  const fb = order.feeBreakdown!;
+  return (
+    <div className="card" style={{ padding: "16px 24px" }}>
+      <div className="label" style={{ marginBottom: 10 }}>Fee Breakdown</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 14 }}>
+        <FeeRow label="Customer sends" value={`${dropsToXrp(fb.customerXrpDrops)} XRP`} />
+        <FeeRow label="Mint fee (FAssets)" value={`−${dropsToXrp(fb.mintFeeDrops)} XRP`} muted />
+        {fb.operatorFeeDrops !== "0" && (
+          <FeeRow label="Service fee" value={`−${dropsToXrp(fb.operatorFeeDrops)} XRP`} muted />
+        )}
+        {fb.redeemFeeDrops !== "0" && (
+          <FeeRow label="Redeem fee" value={`−${dropsToXrp(fb.redeemFeeDrops)} XRP`} muted />
+        )}
+        <div style={{ borderTop: "1px solid var(--border)", marginTop: 4, paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+          <span style={{ fontWeight: 700 }}>Merchant receives</span>
+          <span className="mono" style={{ fontWeight: 700, color: "var(--success)" }}>
+            {dropsToXrp(fb.merchantFxrpDrops)} FXRP
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FeeRow({ label, value, muted }: { label: string; value: string; muted?: boolean }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between" }}>
+      <span className={muted ? "dim" : ""}>{label}</span>
+      <span className="mono">{value}</span>
     </div>
   );
 }
@@ -149,6 +208,7 @@ function PaymentSection({
   destinationTag?: number;
 }) {
   const [showJson, setShowJson] = useState(false);
+  const xrp = useXrpWalletContext();
   const paymentJson = buildXrplPaymentJson({
     destination: vaultAddr,
     amountDrops,
@@ -157,36 +217,31 @@ function PaymentSection({
   });
 
   return (
-    <div className="card col">
-      <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Send XRP Payment</h2>
-      <p className="dim" style={{ fontSize: 14, marginBottom: 16 }}>
-        Send exactly <strong style={{ color: "var(--accent)" }}>{xrpAmount} XRP</strong> to the Core Vault
-        address below. Include the memo so the payment can be matched to your order.
-      </p>
+    <div className="card" style={{ padding: 24 }}>
+      <div style={{ textAlign: "center", marginBottom: 20 }}>
+        <div className="success-icon" style={{ background: "var(--accent-light)", color: "var(--accent)", width: 56, height: 56, fontSize: 28 }}>◎</div>
+        <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Send XRP Payment</h2>
+        <p className="dim" style={{ fontSize: 14 }}>
+          Send exactly <strong style={{ color: "var(--accent)" }}>{xrpAmount} XRP</strong> to the Core Vault
+          with the memo below.
+        </p>
+      </div>
 
-      <div style={{ display: "flex", gap: 32, alignItems: "flex-start", flexWrap: "wrap" }}>
-        <div style={{ flex: "0 0 auto", textAlign: "center" }}>
-          <div
-            style={{
-              background: "white",
-              padding: 16,
-              borderRadius: "var(--radius-sm)",
-              display: "inline-block",
-            }}
-          >
+      <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
+        {/* QR code */}
+        <div style={{ textAlign: "center" }}>
+          <div className="qr-container">
             <QRCodeSVG
               value={paymentUri}
-              size={180}
+              size={172}
               level="M"
-              includeMargin
             />
           </div>
-          <div className="dim" style={{ fontSize: 12, marginTop: 8, maxWidth: 180 }}>
-            Scan with an XRPL wallet
-          </div>
+          <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>Scan with XRPL wallet</div>
         </div>
 
-        <div className="col" style={{ flex: 1, minWidth: 240 }}>
+        {/* Payment details */}
+        <div className="col" style={{ flex: 1, minWidth: 220, gap: 10 }}>
           <CopyField label="Core Vault (XRPL)" value={vaultAddr} />
           {destinationTag !== undefined && (
             <CopyField label="Destination Tag" value={destinationTag.toString()} truncate={false} />
@@ -196,12 +251,26 @@ function PaymentSection({
         </div>
       </div>
 
-      <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap" }}>
-        <a href={paymentUri} target="_blank" rel="noopener noreferrer" className="btn btn-sm">
-          Open in XRPL wallet →
+      {/* Pay with connected XRP wallet */}
+      {xrp.connected && (
+        <div style={{ marginTop: 16, padding: 14, background: "var(--accent-light)", borderRadius: "var(--radius-sm)", border: "1px solid var(--accent-soft)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <span className="badge badge-success">XRP Connected</span>
+            <span className="mono dim" style={{ fontSize: 13 }}>{xrp.address!.slice(0, 8)}…{xrp.address!.slice(-4)}</span>
+          </div>
+          <a href={paymentUri} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center" }}>
+            Open Payment in Wallet →
+          </a>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
+        <a href={paymentUri} target="_blank" rel="noopener noreferrer" className="btn btn-sm" style={{ flex: 1, justifyContent: "center" }}>
+          Open in XRPL Wallet →
         </a>
-        <button className="btn btn-sm" onClick={() => setShowJson(!showJson)} type="button">
-          {showJson ? "Hide" : "Show"} raw payment JSON
+        <button className="btn btn-sm" onClick={() => setShowJson(!showJson)} type="button" style={{ flex: 1, justifyContent: "center" }}>
+          {showJson ? "Hide" : "Show"} Payment JSON
         </button>
       </div>
 
@@ -210,12 +279,13 @@ function PaymentSection({
           className="mono"
           style={{
             fontSize: 12,
-            background: "var(--bg)",
+            background: "var(--bg-subtle)",
             border: "1px solid var(--border)",
             borderRadius: "var(--radius-sm)",
             padding: 12,
             overflow: "auto",
             color: "var(--text-dim)",
+            marginTop: 12,
           }}
         >
           {JSON.stringify(paymentJson, null, 2)}
@@ -224,17 +294,19 @@ function PaymentSection({
 
       <div
         style={{
-          marginTop: 8,
+          marginTop: 16,
           padding: 12,
-          background: "rgba(251,191,36,0.06)",
-          border: "1px solid rgba(251,191,36,0.2)",
+          background: "var(--warning-light)",
           borderRadius: "var(--radius-sm)",
           fontSize: 13,
           color: "var(--warning)",
+          display: "flex",
+          gap: 8,
+          alignItems: "flex-start",
         }}
       >
-        ⚠ Send exactly the specified amount. The memo is required — without it, the
-        payment cannot be matched to your order.
+        <span>⚠</span>
+        <span>Send exactly the specified amount. The memo is required — without it, the payment cannot be matched to your order.</span>
       </div>
     </div>
   );
@@ -242,14 +314,19 @@ function PaymentSection({
 
 function SettlementSection({ order, isLoading }: { order: Order; isLoading: boolean }) {
   return (
-    <div className="card col">
-      <h2 style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Settlement</h2>
-      <p className="dim" style={{ fontSize: 14 }}>
-        {isLoading ? "Checking for payment…" : "Payment detected. Minting FXRP on Flare…"}
+    <div className="card" style={{ padding: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+        <div className="spinner" />
+        <h2 style={{ fontSize: 16, fontWeight: 700 }}>Settlement in Progress</h2>
+      </div>
+      <p className="dim" style={{ fontSize: 14, marginBottom: 16 }}>
+        {isLoading ? "Checking for payment…" : "Payment detected. Minting FXRP on Flare via FDC proof…"}
       </p>
 
       {order.matchedTxHash && (
-        <CopyField label="XRPL Payment Tx" value={order.matchedTxHash} />
+        <div style={{ marginBottom: 12 }}>
+          <CopyField label="XRPL Payment Tx" value={order.matchedTxHash} />
+        </div>
       )}
       {order.settleTxHash && (
         <div>
@@ -265,26 +342,56 @@ function SettlementSection({ order, isLoading }: { order: Order; isLoading: bool
           </a>
         </div>
       )}
+    </div>
+  );
+}
 
-      {order.feeBreakdown && (
-        <div style={{ marginTop: 8 }}>
-          <div className="label">Fee Breakdown</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 14 }}>
-            <span className="dim">Customer pays</span>
-            <span className="mono">{dropsToXrp(order.feeBreakdown.customerXrpDrops)} XRP</span>
-            <span className="dim">Mint fee</span>
-            <span className="mono">{dropsToXrp(order.feeBreakdown.mintFeeDrops)} XRP</span>
-            <span className="dim">FXRP minted</span>
-            <span className="mono">{dropsToXrp(order.feeBreakdown.fxrpMintedDrops)} FXRP</span>
-            {order.feeBreakdown.merchantFxrpDrops !== "0" && (
-              <>
-                <span className="dim">Merchant receives</span>
-                <span className="mono" style={{ color: "var(--success)" }}>
-                  {dropsToXrp(order.feeBreakdown.merchantFxrpDrops)} FXRP
-                </span>
-              </>
-            )}
-          </div>
+function TerminalSection({ order }: { order: Order }) {
+  const isSettled = order.status === "SETTLED" || order.status === "REDEEMED";
+  const isRefunded = order.status === "REFUNDED";
+  const isError = order.status === "EXPIRED" || order.status === "FAILED";
+
+  return (
+    <div className="card" style={{ padding: 24, textAlign: "center" }}>
+      {isSettled ? (
+        <>
+          <div className="success-icon">✓</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Payment Successful</h2>
+          <p className="dim" style={{ marginBottom: 16 }}>
+            FXRP has been minted to the merchant on Flare.
+          </p>
+        </>
+      ) : isRefunded ? (
+        <>
+          <div className="success-icon" style={{ background: "var(--info-light)", color: "var(--info)" }}>↩</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>Refunded</h2>
+          <p className="dim" style={{ marginBottom: 16 }}>
+            Your XRP has been refunded. See details below.
+          </p>
+        </>
+      ) : isError ? (
+        <>
+          <div className="success-icon" style={{ background: "var(--danger-light)", color: "var(--danger)" }}>✕</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 6 }}>
+            {order.status === "EXPIRED" ? "Order Expired" : "Order Failed"}
+          </h2>
+          <p className="dim" style={{ marginBottom: 16 }}>
+            {order.status === "EXPIRED"
+              ? "The payment window has closed. Create a new order to try again."
+              : "Something went wrong during settlement. Please contact support."}
+          </p>
+        </>
+      ) : null}
+
+      {/* Settlement details */}
+      {order.settleTxHash && (
+        <div style={{ marginBottom: 12 }}>
+          <CopyField label="Flare Mint Tx" value={order.settleTxHash} />
+        </div>
+      )}
+      {order.refundTxHash && (
+        <div style={{ marginBottom: 12 }}>
+          <CopyField label="Refund XRPL Tx" value={order.refundTxHash} />
         </div>
       )}
     </div>
@@ -296,8 +403,6 @@ function SettlementSection({ order, isLoading }: { order: Order; isLoading: bool
  * Format: 0x4642505266410018 + 00000000 + 20-byte merchant address (no 0x).
  */
 function buildMemoHex(order: Order): string | undefined {
-  // The backend encodes the memo; for the checkout UI we construct it from the
-  // merchant's Flare address. 32-byte format: prefix(8) + zero(4) + recipient(20).
   const merchantAddr = order.merchantFlareAddress.replace(/^0x/, "").toLowerCase();
   if (merchantAddr.length !== 40) return undefined;
   return `464250526641001800000000${merchantAddr}`;

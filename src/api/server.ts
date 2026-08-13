@@ -96,7 +96,7 @@ export function createApiServer(svc: CheckoutService, opts: ApiServerOptions = {
     }
 
     if (req.method === "GET" && path === "/orders") {
-      return send(200, svc.listOpen());
+      return send(200, svc.listAll());
     }
 
     const orderMatch = path.match(/^\/orders\/(.+)$/);

@@ -1,24 +1,38 @@
 /**
- * Global styles — dark, crypto-native aesthetic.
- * No CSS framework; just CSS variables + utility classes.
+ * Global styles — light, merchant-friendly theme.
+ * Orange accent (#FF6B00), black/gray text, white card surfaces.
+ * No CSS framework; CSS variables + utility classes.
  */
 
 :root {
-  --bg: #0a0a0b;
-  --bg-card: #131316;
-  --bg-elevated: #1a1a1e;
-  --border: #2a2a30;
-  --text: #e8e8ed;
-  --text-dim: #888892;
-  --text-muted: #555560;
-  --accent: #fc3;
-  --accent-dim: #c9a92e;
-  --success: #4ade80;
-  --warning: #fbbf24;
-  --danger: #f87171;
-  --info: #60a5fa;
-  --radius: 12px;
-  --radius-sm: 8px;
+  --bg: #f6f7f9;
+  --bg-card: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f0f1f4;
+  --border: #e2e5ea;
+  --border-strong: #cbd0d8;
+  --text: #1a1a1a;
+  --text-dim: #6b7280;
+  --text-muted: #9ca3af;
+  --accent: #ff6b00;
+  --accent-hover: #e85f00;
+  --accent-light: #fff3e8;
+  --accent-soft: rgba(255, 107, 0, 0.1);
+  --success: #16a34a;
+  --success-light: #dcfce7;
+  --warning: #d97706;
+  --warning-light: #fef3c7;
+  --danger: #dc2626;
+  --danger-light: #fee2e2;
+  --info: #2563eb;
+  --info-light: #dbeafe;
+  --radius: 14px;
+  --radius-sm: 10px;
+  --radius-xs: 6px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
   --mono: "SF Mono", "Fira Code", "JetBrains Mono", ui-monospace, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
@@ -39,7 +53,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -48,7 +62,7 @@ body {
 }
 
 a {
-  color: var(--info);
+  color: var(--accent);
   text-decoration: none;
 }
 a:hover {
@@ -72,6 +86,7 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 24px;
+  box-shadow: var(--shadow-sm);
 }
 
 .card-elevated {
@@ -79,6 +94,7 @@ a:hover {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 24px;
+  box-shadow: var(--shadow);
 }
 
 .btn {
@@ -88,16 +104,18 @@ a:hover {
   padding: 10px 20px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--bg-elevated);
+  background: var(--bg-card);
   color: var(--text);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.15s ease;
   font-family: var(--sans);
+  white-space: nowrap;
 }
 .btn:hover {
   border-color: var(--accent);
+  box-shadow: var(--shadow-sm);
 }
 .btn:disabled {
   opacity: 0.5;
@@ -106,16 +124,16 @@ a:hover {
 
 .btn-primary {
   background: var(--accent);
-  color: #0a0a0b;
+  color: #fff;
   border-color: var(--accent);
 }
 .btn-primary:hover {
-  background: var(--accent-dim);
-  border-color: var(--accent-dim);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .btn-sm {
-  padding: 6px 14px;
+  padding: 7px 14px;
   font-size: 13px;
 }
 
@@ -123,22 +141,23 @@ a:hover {
   width: 100%;
   padding: 12px 16px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
   color: var(--text);
   font-size: 15px;
   font-family: var(--sans);
-  transition: border-color 0.15s ease;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .input:focus {
   outline: none;
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .label {
   display: block;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 700;
   color: var(--text-dim);
   margin-bottom: 6px;
   text-transform: uppercase;
@@ -149,41 +168,41 @@ a:hover {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 10px;
+  padding: 4px 10px;
   border-radius: 100px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 700;
   font-family: var(--mono);
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
 
 .badge-success {
-  background: rgba(74, 222, 128, 0.12);
+  background: var(--success-light);
   color: var(--success);
 }
 .badge-warning {
-  background: rgba(251, 191, 36, 0.12);
+  background: var(--warning-light);
   color: var(--warning);
 }
 .badge-danger {
-  background: rgba(248, 113, 113, 0.12);
+  background: var(--danger-light);
   color: var(--danger);
 }
 .badge-info {
-  background: rgba(96, 165, 250, 0.12);
+  background: var(--info-light);
   color: var(--info);
 }
 .badge-neutral {
-  background: rgba(136, 136, 146, 0.12);
+  background: var(--bg-subtle);
   color: var(--text-dim);
 }
 
 .copy-btn {
-  background: none;
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
+  border-radius: var(--radius-xs);
+  padding: 5px 10px;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 12px;
@@ -192,6 +211,7 @@ a:hover {
 .copy-btn:hover {
   color: var(--accent);
   border-color: var(--accent);
+  background: var(--accent-light);
 }
 
 .grid {
@@ -209,6 +229,237 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Two-column dashboard layout */
+.dash-layout {
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .dash-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Sidebar nav items */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-decoration: none;
+}
+.nav-item:hover {
+  background: var(--bg-subtle);
+  text-decoration: none;
+}
+.nav-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+/* Stat card */
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.stat-card .stat-value {
+  font-size: 26px;
+  font-weight: 800;
+  font-family: var(--mono);
+  letter-spacing: -0.5px;
+}
+.stat-card .stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* Mini sparkline / bar chart */
+.bar-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  height: 48px;
+  margin-top: 8px;
+}
+.bar-chart .bar {
+  flex: 1;
+  background: var(--accent-soft);
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  transition: height 0.3s ease;
+}
+.bar-chart .bar.active {
+  background: var(--accent);
+}
+
+/* Table */
+table.orders-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+table.orders-table th {
+  text-align: left;
+  padding: 10px 14px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+table.orders-table td {
+  padding: 12px 14px;
+  font-size: 14px;
+  border-bottom: 1px solid var(--border);
+}
+table.orders-table tr:hover td {
+  background: var(--bg-subtle);
+}
+table.orders-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Filter pills */
+.filter-pill {
+  padding: 6px 14px;
+  border-radius: 100px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-dim);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.filter-pill:hover {
+  border-color: var(--accent);
+}
+.filter-pill.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* Wallet connect button */
+.wallet-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: var(--shadow-sm);
+}
+.wallet-btn:hover {
+  border-color: var(--accent);
+  box-shadow: var(--shadow);
+}
+.wallet-btn.connected {
+  border-color: var(--success);
+}
+
+/* Checkout layout */
+.checkout-layout {
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+/* QR container */
+.qr-container {
+  background: #fff;
+  padding: 20px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  display: inline-block;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Success checkmark */
+.success-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--success-light);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  color: var(--success);
+  margin: 0 auto 16px;
+}
+
+/* Progress steps (checkout) */
+.progress-steps {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin: 20px 0;
+}
+.progress-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.progress-step .dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: var(--bg-card);
+}
+.progress-step.done .dot {
+  background: var(--success);
+  border-color: var(--success);
+  color: #fff;
+}
+.progress-step.active .dot {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.progress-line {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+  margin: 0 8px;
+  border-radius: 1px;
+}
+.progress-line.done {
+  background: var(--success);
 }
 
 @keyframes spin {

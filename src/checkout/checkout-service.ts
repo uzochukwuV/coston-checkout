@@ -10,6 +10,7 @@ import type { AssetManagerClient, FeeParams } from "../chain/asset-manager.js";
 import { FtsoClient, XRP_USD_FEED_ID } from "../chain/ftso.js";
 import type { XrplWatcher } from "../chain/xrpl-watcher.js";
 import type { VaultPayment } from "../chain/xrpl-watcher.js";
+import type { XrplPayer } from "../chain/xrpl-payer.js";
 import {
   computeQuote,
   isQuoteLive,
@@ -82,6 +83,9 @@ export interface CheckoutConfig {
   serviceFeeBps?: number; // operator service fee in BIPS
   expirySeconds?: number;
   maxRedeemAttempts?: number; // default 3
+  /** For refunds: the XRPL address where the customer should receive their refund. */
+  customerRefundAddress?: string;
+  customerRefundDestinationTag?: number;
 }
 
 export interface CreateOrderInput {
@@ -112,6 +116,7 @@ export class CheckoutService {
     private executor: Executor,
     private assetManager: AssetManagerClient,
     private redeemer?: Redeemer,
+    private xrplPayer?: XrplPayer,
     store?: IOrderStore,
   ) {
     this.store = store ?? new OrderStore();
@@ -191,6 +196,10 @@ export class CheckoutService {
 
   listOpen(): Order[] {
     return this.store.listOpen("AWAITING_PAYMENT");
+  }
+
+  listAll(): Order[] {
+    return this.store.listAll().sort((a, b) => b.createdAt - a.createdAt);
   }
 
   getVaultAddress(): Promise<string> {
@@ -416,18 +425,74 @@ export class CheckoutService {
 
   /** Refund the customer: operator sends XRP back (covers the sunk mint fee). */
   private async refundOrder(order: Order, reason: string): Promise<Order> {
-    // In production this issues an XRPL Payment from the operator wallet to the
-    // customer's source address. The refund amount is the customer payment minus
-    // the sunk mint fee (non-recoverable) — the operator waives its own fee.
+    // Refund amount = customer payment minus the sunk mint fee (non-recoverable).
+    // The operator waives its own fee on refund.
     const refundAmount = computeRefundAmount(
       order.quote.xrpAmountDrops,
       order.feeBreakdown?.mintFeeDrops ?? 0n,
       order.feeBreakdown?.operatorFeeDrops ?? 0n,
     );
-    // stub: a real implementation sends the XRPL payment and records the tx hash.
+
+    const refundAddress =
+      order.customerXrplAddress ?? this.cfg.customerRefundAddress;
+    if (!refundAddress) {
+      const failed = transition(order, "FAILED", {
+        error: `${reason}; cannot refund — no customer XRPL address on record`,
+      });
+      this.store.save(failed);
+      await this.fireWebhook(failed, "");
+      return failed;
+    }
+
+    if (refundAmount <= 0n) {
+      const refunded = transition(order, "REFUNDED", {
+        refundTxHash: undefined,
+        error: `${reason}; refund amount 0 (fully consumed by fees)`,
+      });
+      this.store.save(refunded);
+      await this.fireWebhook(refunded, "");
+      return refunded;
+    }
+
+    // Send the XRPL Payment from the operator wallet to the customer.
+    if (this.xrplPayer) {
+      const result = await this.xrplPayer.sendPayment(
+        refundAddress,
+        refundAmount.toString(),
+        this.cfg.customerRefundDestinationTag,
+      );
+      if (result.ok && result.txHash) {
+        const refunded = transition(order, "REFUNDED", {
+          refundTxHash: result.txHash,
+          error: undefined,
+        });
+        this.store.save(refunded);
+        await this.fireWebhook(refunded, result.txHash);
+        return refunded;
+      }
+      if (!result.dryRun) {
+        // Broadcast attempted but failed — mark as FAILED, log for manual retry.
+        const failed = transition(order, "FAILED", {
+          error: `${reason}; refund broadcast failed: ${result.error ?? "unknown"}. Amount: ${refundAmount} drops to ${refundAddress}`,
+        });
+        this.store.save(failed);
+        await this.fireWebhook(failed, "");
+        return failed;
+      }
+      // Dry-run: record the intent but don't transition to REFUNDED.
+      const pending = transition(order, "REFUNDED", {
+        refundTxHash: undefined,
+        error: `${reason}; refund ${refundAmount} drops to ${refundAddress} (DRY_RUN — not broadcast)`,
+      });
+      this.store.save(pending);
+      await this.fireWebhook(pending, "");
+      return pending;
+    }
+
+    // No XrplPayer configured — record intent, mark for manual processing.
     const refunded = transition(order, "REFUNDED", {
       refundTxHash: undefined,
-      error: `${reason}; refund ${refundAmount} drops (operator-funded)`,
+      error: `${reason}; refund ${refundAmount} drops to ${refundAddress} (no XrplPayer — process manually)`,
     });
     this.store.save(refunded);
     await this.fireWebhook(refunded, "");
