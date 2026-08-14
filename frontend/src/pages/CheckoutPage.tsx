@@ -2,10 +2,17 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation } from "@tanstack/react-query";
 import { QRCodeSVG } from "qrcode.react";
+import { useAccount } from "wagmi";
 import { api } from "../api";
 import { useOrderPoll } from "../hooks/useOrderPoll";
 import { useXrpWalletContext } from "../components/XrpWalletProvider";
-import { TESTNET_CORE_VAULT, buildXrplPaymentUri, buildXrplPaymentJson } from "../xrpl";
+import {
+  TESTNET_CORE_VAULT,
+  buildXrplPaymentUri,
+  buildXrplPaymentJson,
+  buildDirectMintingMemo,
+  buildDirectMintingPayment,
+} from "../xrpl";
 import { CopyField } from "../components/CopyField";
 import { StatusFlow, StatusBadge } from "../components/StatusBadge";
 import { CountdownTimer } from "../components/CountdownTimer";
@@ -81,7 +88,15 @@ function OrderDetail({ order, isLoading }: { order: Order; isLoading: boolean })
   const terminal = isTerminal(order.status);
   const xrpAmount = dropsToXrp(order.quote.xrpAmountDrops);
   const vaultAddr = TESTNET_CORE_VAULT;
-  const memoHex = buildMemoHex(order);
+  const { address: flareAddress, isConnected: flareConnected } = useAccount();
+
+  // The FXRP recipient is the customer's connected Flare wallet, or the order's
+  // merchant address as fallback. This address is encoded in the direct-minting memo.
+  const recipientFlareAddress = flareConnected && flareAddress
+    ? flareAddress
+    : order.merchantFlareAddress;
+
+  const memoHex = buildDirectMintingMemo(recipientFlareAddress);
   const paymentUri = buildXrplPaymentUri({
     destination: vaultAddr,
     amountDrops: order.quote.xrpAmountDrops,
@@ -129,6 +144,31 @@ function OrderDetail({ order, isLoading }: { order: Order; isLoading: boolean })
         </div>
       </div>
 
+      {/* FXRP recipient info — shows where FXRP will be minted */}
+      <div className="card" style={{ padding: "16px 24px" }}>
+        <div className="label" style={{ marginBottom: 8 }}>FXRP Recipient (Flare)</div>
+        {flareConnected && flareAddress ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span className="badge badge-success">Your wallet</span>
+            <span className="mono" style={{ fontSize: 14, wordBreak: "break-all" }}>
+              {flareAddress}
+            </span>
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <span className="mono dim" style={{ fontSize: 14, wordBreak: "break-all" }}>
+              {order.merchantFlareAddress}
+            </span>
+            <span className="dim" style={{ fontSize: 13 }}>
+              Connect Flare wallet to receive FXRP to your own address →
+            </span>
+          </div>
+        )}
+        <div className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          This address is encoded in the direct-minting memo. FXRP will be minted here when the executor finalizes.
+        </div>
+      </div>
+
       {/* Fee transparency — always visible */}
       {order.feeBreakdown && <FeeSummary order={order} />}
 
@@ -140,6 +180,7 @@ function OrderDetail({ order, isLoading }: { order: Order; isLoading: boolean })
           memoHex={memoHex}
           paymentUri={paymentUri}
           destinationTag={order.tagId}
+          recipientFlareAddress={recipientFlareAddress}
         />
       ) : terminal ? (
         <TerminalSection order={order} />
@@ -199,6 +240,7 @@ function PaymentSection({
   memoHex,
   paymentUri,
   destinationTag,
+  recipientFlareAddress,
 }: {
   vaultAddr: string;
   xrpAmount: string;
@@ -206,15 +248,44 @@ function PaymentSection({
   memoHex: string | undefined;
   paymentUri: string;
   destinationTag?: number;
+  recipientFlareAddress: string;
 }) {
   const [showJson, setShowJson] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [payError, setPayError] = useState<string | null>(null);
+  const [payTxHash, setPayTxHash] = useState<string | null>(null);
   const xrp = useXrpWalletContext();
+
   const paymentJson = buildXrplPaymentJson({
     destination: vaultAddr,
     amountDrops,
     memoHex,
     destinationTag,
   });
+
+  /** One-click pay: build the direct-minting Payment and sign+submit via Crossmark. */
+  const handlePayWithCrossmark = async () => {
+    setPaying(true);
+    setPayError(null);
+    try {
+      const tx = buildDirectMintingPayment({
+        destination: vaultAddr,
+        xrpAmountDrops: amountDrops,
+        recipientFlareAddress,
+        destinationTag,
+      });
+      const result = await xrp.signAndSubmitPayment(tx);
+      setPayTxHash(result.hash);
+    } catch (e) {
+      setPayError((e as Error).message);
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  // Determine which payment path to highlight
+  const canPayWithCrossmark = xrp.connected && xrp.hasExtension;
+  const showCrossmarkSuccess = payTxHash !== null;
 
   return (
     <div className="card" style={{ padding: 24 }}>
@@ -223,58 +294,111 @@ function PaymentSection({
         <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>Send XRP Payment</h2>
         <p className="dim" style={{ fontSize: 14 }}>
           Send exactly <strong style={{ color: "var(--accent)" }}>{xrpAmount} XRP</strong> to the Core Vault
-          with the memo below.
+          with the direct-minting memo below.
         </p>
       </div>
 
-      <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
-        {/* QR code */}
-        <div style={{ textAlign: "center" }}>
-          <div className="qr-container">
-            <QRCodeSVG
-              value={paymentUri}
-              size={172}
-              level="M"
-            />
-          </div>
-          <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>Scan with XRPL wallet</div>
-        </div>
-
-        {/* Payment details */}
-        <div className="col" style={{ flex: 1, minWidth: 220, gap: 10 }}>
-          <CopyField label="Core Vault (XRPL)" value={vaultAddr} />
-          {destinationTag !== undefined && (
-            <CopyField label="Destination Tag" value={destinationTag.toString()} truncate={false} />
-          )}
-          <CopyField label="Amount" value={`${xrpAmount} XRP`} truncate={false} mono={false} />
-          {memoHex && <CopyField label="Memo (hex)" value={memoHex} />}
-        </div>
-      </div>
-
-      {/* Pay with connected XRP wallet */}
-      {xrp.connected && (
-        <div style={{ marginTop: 16, padding: 14, background: "var(--accent-light)", borderRadius: "var(--radius-sm)", border: "1px solid var(--accent-soft)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-            <span className="badge badge-success">XRP Connected</span>
+      {/* === Primary path: Pay with Crossmark === */}
+      {canPayWithCrossmark && !showCrossmarkSuccess && (
+        <div style={{ marginBottom: 20, padding: 16, background: "var(--accent-light)", borderRadius: "var(--radius)", border: "1px solid var(--accent-soft)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+            <span className="badge badge-success">Crossmark Connected</span>
             <span className="mono dim" style={{ fontSize: 13 }}>{xrp.address!.slice(0, 8)}…{xrp.address!.slice(-4)}</span>
+            {xrp.network && <span className="dim" style={{ fontSize: 11 }}>· {xrp.network}</span>}
           </div>
-          <a href={paymentUri} target="_blank" rel="noopener noreferrer" className="btn btn-primary btn-sm" style={{ width: "100%", justifyContent: "center" }}>
-            Open Payment in Wallet →
-          </a>
+          <p className="dim" style={{ fontSize: 13, marginBottom: 12 }}>
+            This will open Crossmark to sign and submit an XRPL Payment of <strong>{xrpAmount} XRP</strong> to the
+            Flare Core Vault. The direct-minting memo encodes the recipient <code className="mono" style={{ fontSize: 12 }}>{recipientFlareAddress.slice(0, 8)}…{recipientFlareAddress.slice(-4)}</code> so FXRP is minted to that address.
+          </p>
+          <button
+            className="btn btn-primary"
+            onClick={handlePayWithCrossmark}
+            disabled={paying}
+            style={{ width: "100%", justifyContent: "center", padding: "12px 20px", fontSize: 15 }}
+          >
+            {paying ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="spinner" /> Waiting for signature…
+              </span>
+            ) : (
+              `Pay ${xrpAmount} XRP via Crossmark →`
+            )}
+          </button>
+          {payError && (
+            <div style={{ color: "var(--danger)", fontSize: 13, marginTop: 10, textAlign: "center" }}>
+              {payError}
+            </div>
+          )}
         </div>
       )}
 
-      {/* Actions */}
-      <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
-        <a href={paymentUri} target="_blank" rel="noopener noreferrer" className="btn btn-sm" style={{ flex: 1, justifyContent: "center" }}>
-          Open in XRPL Wallet →
-        </a>
-        <button className="btn btn-sm" onClick={() => setShowJson(!showJson)} type="button" style={{ flex: 1, justifyContent: "center" }}>
-          {showJson ? "Hide" : "Show"} Payment JSON
-        </button>
-      </div>
+      {/* === Crossmark success confirmation === */}
+      {showCrossmarkSuccess && (
+        <div className="card" style={{ marginBottom: 20, padding: 16, background: "var(--success-light)", border: "1px solid var(--success)", textAlign: "center" }}>
+          <div className="success-icon" style={{ margin: "0 auto 8px" }}>✓</div>
+          <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Payment Submitted!</h3>
+          <p className="dim" style={{ fontSize: 13, marginBottom: 12 }}>
+            XRPL tx hash:
+          </p>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "center" }}>
+            <code className="mono" style={{ fontSize: 13 }}>{payTxHash!.slice(0, 16)}…</code>
+            <button className="copy-btn" onClick={() => navigator.clipboard.writeText(payTxHash!)} type="button">Copy</button>
+          </div>
+          <a
+            href={`https://testnet.xrpl.org/transactions/${payTxHash}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn-sm"
+            style={{ marginTop: 12, justifyContent: "center" }}
+          >
+            View on XRPL Explorer →
+          </a>
+          <p className="dim" style={{ fontSize: 13, marginTop: 12 }}>
+            The executor will detect this payment and mint FXRP on Flare automatically.
+          </p>
+        </div>
+      )}
 
-      {showJson && (
+      {/* === Manual path: QR + deep-link === */}
+      {!showCrossmarkSuccess && (
+        <>
+          <div style={{ display: "flex", gap: 24, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
+            {/* QR code */}
+            <div style={{ textAlign: "center" }}>
+              <div className="qr-container">
+                <QRCodeSVG
+                  value={paymentUri}
+                  size={172}
+                  level="M"
+                />
+              </div>
+              <div className="dim" style={{ fontSize: 12, marginTop: 8 }}>Scan with XRPL wallet</div>
+            </div>
+
+            {/* Payment details */}
+            <div className="col" style={{ flex: 1, minWidth: 220, gap: 10 }}>
+              <CopyField label="Core Vault (XRPL)" value={vaultAddr} />
+              {destinationTag !== undefined && (
+                <CopyField label="Destination Tag" value={destinationTag.toString()} truncate={false} />
+              )}
+              <CopyField label="Amount" value={`${xrpAmount} XRP`} truncate={false} mono={false} />
+              {memoHex && <CopyField label="Memo (direct-mint hex)" value={memoHex} />}
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div style={{ marginTop: 16, display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <a href={paymentUri} target="_blank" rel="noopener noreferrer" className="btn btn-sm" style={{ flex: 1, justifyContent: "center" }}>
+              Open in XRPL Wallet →
+            </a>
+            <button className="btn btn-sm" onClick={() => setShowJson(!showJson)} type="button" style={{ flex: 1, justifyContent: "center" }}>
+              {showJson ? "Hide" : "Show"} Payment JSON
+            </button>
+          </div>
+        </>
+      )}
+
+      {showJson && !showCrossmarkSuccess && (
         <pre
           className="mono"
           style={{
@@ -306,7 +430,7 @@ function PaymentSection({
         }}
       >
         <span>⚠</span>
-        <span>Send exactly the specified amount. The memo is required — without it, the payment cannot be matched to your order.</span>
+        <span>Send exactly the specified amount. The memo encodes the recipient Flare address — without it, the payment cannot be matched to your order.</span>
       </div>
     </div>
   );
@@ -396,14 +520,4 @@ function TerminalSection({ order }: { order: Order }) {
       )}
     </div>
   );
-}
-
-/**
- * Build the direct-minting memo hex for a Flow A order.
- * Format: 0x4642505266410018 + 00000000 + 20-byte merchant address (no 0x).
- */
-function buildMemoHex(order: Order): string | undefined {
-  const merchantAddr = order.merchantFlareAddress.replace(/^0x/, "").toLowerCase();
-  if (merchantAddr.length !== 40) return undefined;
-  return `464250526641001800000000${merchantAddr}`;
 }

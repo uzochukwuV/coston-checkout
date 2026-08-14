@@ -4,7 +4,7 @@
  */
 
 import { createContext, useContext, type ReactNode } from "react";
-import { useXrpWallet, type XrpWalletState } from "../hooks/useXrpWallet";
+import { useXrpWallet, type XrpWalletState, type XrpTxResult } from "../hooks/useXrpWallet";
 
 const XrpWalletContext = createContext<XrpWalletState | null>(null);
 
@@ -18,3 +18,5 @@ export function useXrpWalletContext(): XrpWalletState {
   if (!ctx) throw new Error("useXrpWalletContext must be used within XrpWalletProvider");
   return ctx;
 }
+
+export type { XrpWalletState, XrpTxResult };

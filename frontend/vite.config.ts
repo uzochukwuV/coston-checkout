@@ -10,6 +10,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: true,
+    allowedHosts: [
+      "work-1-tmobgtqtfytgtzja.prod-runtime.all-hands.dev",
+      "work-2-tmobgtqtfytgtzja.prod-runtime.all-hands.dev",
+    ],
     proxy: {
       "/api": {
         target: API_BASE,

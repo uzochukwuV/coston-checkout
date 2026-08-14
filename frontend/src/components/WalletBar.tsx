@@ -51,7 +51,7 @@ export function WalletBar() {
           <span className="mono" style={{ fontSize: 12 }}>
             {xrp.address!.slice(0, 5)}…{xrp.address!.slice(-3)}
           </span>
-          <span className="dim" style={{ fontSize: 11 }}>XRP</span>
+          <span className="dim" style={{ fontSize: 11 }}>XRP{xrp.network ? ` · ${xrp.network}` : ""}</span>
         </button>
       ) : (
         <div style={{ position: "relative" }}>
@@ -89,11 +89,22 @@ export function WalletBar() {
                   }}
                   disabled={xrp.connecting}
                 >
-                  <XrpIcon /> Crossmark
+                  <XrpIcon /> {xrp.connecting ? "Connecting…" : "Crossmark"}
                 </button>
               ) : (
-                <div className="dim" style={{ padding: "8px 10px", fontSize: 12 }}>
-                  Crossmark extension not detected.
+                <div style={{ marginBottom: 4 }}>
+                  <div className="dim" style={{ padding: "8px 10px", fontSize: 12, marginBottom: 4 }}>
+                    Crossmark extension not detected.
+                  </div>
+                  <a
+                    href="https://crossmark.io/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="btn btn-sm"
+                    style={{ width: "100%", justifyContent: "center", fontSize: 12 }}
+                  >
+                    Install Crossmark →
+                  </a>
                 </div>
               )}
               <button
@@ -133,7 +144,7 @@ export function WalletBar() {
             <h3 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8 }}>Connect XRP Wallet</h3>
             <p className="dim" style={{ fontSize: 14, marginBottom: 16 }}>
               Enter your XRPL account address (starts with "r"). This is a read-only connection
-              used to display your wallet in the checkout flow.
+              — to sign payments, install the <a href="https://crossmark.io/" target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)" }}>Crossmark</a> extension.
             </p>
             <input
               className="input"
